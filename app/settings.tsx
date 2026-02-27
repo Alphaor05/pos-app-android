@@ -147,7 +147,7 @@ function BluetoothSection() {
       >
         <Animated.View style={[styles.scanBtnInner, pulseStyle]}>
           <MaterialCommunityIcons
-            name={status === 'scanning' ? 'bluetooth-audio' : 'bluetooth-search'}
+            name={status === 'scanning' ? 'bluetooth-audio' : 'bluetooth'}
             size={20}
             color={status === 'scanning' ? C.text : C.accent}
           />

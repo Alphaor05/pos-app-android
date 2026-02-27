@@ -8,7 +8,6 @@ import {
   FlatList,
   ScrollView,
   Platform,
-  Alert,
 } from 'react-native';
 import { Image } from 'expo-image';
 import Animated, {
@@ -23,6 +22,7 @@ import {
   MaterialCommunityIcons,
   Ionicons,
   Feather,
+  MaterialIcons,
 } from '@expo/vector-icons';
 import { useAuth } from '@/context/AuthContext';
 import { useCart, CartItem } from '@/context/CartContext';
@@ -32,9 +32,12 @@ import Colors from '@/constants/colors';
 
 const C = Colors.dark;
 
+type OrderType = 'Dine In' | 'Take Away' | 'Delivery';
+const ORDER_TYPES: OrderType[] = ['Dine In', 'Take Away', 'Delivery'];
+
 export default function POSScreen() {
   const { logout } = useAuth();
-  const { items, addItem, removeItem, updateQuantity, clearCart, total, itemCount } = useCart();
+  const { items, addItem, removeItem, updateQuantity, clearCart, total } = useCart();
   const { connectedDevice, status: btStatus, printReceipt } = useBluetooth();
   const insets = useSafeAreaInsets();
 
@@ -42,6 +45,9 @@ export default function POSScreen() {
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [printing, setPrinting] = useState(false);
   const [orderSuccess, setOrderSuccess] = useState(false);
+  const [orderType, setOrderType] = useState<OrderType>('Dine In');
+  const [discount, setDiscount] = useState('0');
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const topPad = Platform.OS === 'web' ? 67 : insets.top;
   const botPad = Platform.OS === 'web' ? 34 : insets.bottom;
@@ -55,6 +61,11 @@ export default function POSScreen() {
     });
   }, [search, selectedCategory]);
 
+  const discountAmount = parseFloat(discount) || 0;
+  const taxAmount = total * 0.05;
+  const grandTotal = total - discountAmount + taxAmount;
+  const itemCount = items.reduce((s, i) => s + i.quantity, 0);
+
   const handleLogout = () => {
     if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     logout();
@@ -64,7 +75,6 @@ export default function POSScreen() {
   const handleCharge = async () => {
     if (items.length === 0) return;
     if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-
     if (btStatus === 'connected') {
       setPrinting(true);
       const receiptItems = items.map(i => ({
@@ -72,10 +82,9 @@ export default function POSScreen() {
         qty: i.quantity,
         price: i.product.price,
       }));
-      await printReceipt(receiptItems, total);
+      await printReceipt(receiptItems, grandTotal);
       setPrinting(false);
     }
-
     setOrderSuccess(true);
     setTimeout(() => {
       clearCart();
@@ -84,216 +93,256 @@ export default function POSScreen() {
   };
 
   return (
-    <View style={[styles.root, { paddingTop: topPad, paddingBottom: botPad }]}>
-      <Sidebar onLogout={handleLogout} onSettings={() => router.push('/settings')} btConnected={btStatus === 'connected'} />
+    <View style={[styles.root, { paddingTop: topPad }]}>
+      <View style={styles.topBar}>
+        <View style={styles.topBarLeft}>
+          <Pressable
+            style={styles.topBarIconBtn}
+            onPress={() => setSidebarOpen(v => !v)}
+          >
+            <Ionicons name="menu" size={22} color={C.text} />
+          </Pressable>
 
-      <View style={styles.mainArea}>
-        <View style={styles.searchRow}>
+          <View style={styles.pageSelector}>
+            <Text style={styles.pageSelectorText}>PAGE 1</Text>
+            <MaterialIcons name="arrow-drop-down" size={20} color={C.textSecondary} />
+          </View>
+
           <View style={styles.searchBox}>
-            <Feather name="search" size={18} color={C.textSecondary} />
+            <Feather name="search" size={16} color={C.textSecondary} />
             <TextInput
               style={styles.searchInput}
-              placeholder="Search products or SKU..."
+              placeholder="Search..."
               placeholderTextColor={C.textMuted}
               value={search}
               onChangeText={setSearch}
             />
             {search.length > 0 && (
               <Pressable onPress={() => setSearch('')}>
-                <Feather name="x" size={16} color={C.textSecondary} />
+                <Feather name="x" size={14} color={C.textSecondary} />
               </Pressable>
             )}
           </View>
         </View>
 
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          style={styles.categoriesScroll}
-          contentContainerStyle={styles.categoriesContent}
-        >
-          {CATEGORIES.map(cat => (
-            <CategoryChip
-              key={cat}
-              label={cat}
-              selected={selectedCategory === cat}
-              onPress={() => setSelectedCategory(cat)}
-            />
-          ))}
-        </ScrollView>
-
-        <FlatList
-          data={filteredProducts}
-          keyExtractor={p => p.id}
-          numColumns={3}
-          columnWrapperStyle={styles.gridRow}
-          contentContainerStyle={styles.gridContent}
-          showsVerticalScrollIndicator={false}
-          renderItem={({ item }) => (
-            <ProductCard product={item} onPress={addItem} />
-          )}
-          ListEmptyComponent={
-            <View style={styles.emptyState}>
-              <Feather name="package" size={40} color={C.textMuted} />
-              <Text style={styles.emptyText}>No products found</Text>
-            </View>
-          }
-        />
-      </View>
-
-      <View style={styles.cartPanel}>
-        <View style={styles.cartHeader}>
-          <Text style={styles.cartTitle}>Order</Text>
-          {itemCount > 0 && (
-            <Pressable onPress={clearCart} style={styles.clearBtn}>
-              <Text style={styles.clearBtnText}>Clear</Text>
-            </Pressable>
-          )}
-        </View>
-
-        {items.length === 0 ? (
-          <View style={styles.cartEmpty}>
-            <MaterialCommunityIcons name="cart-outline" size={48} color={C.textMuted} />
-            <Text style={styles.cartEmptyText}>No items added</Text>
-          </View>
-        ) : (
-          <FlatList
-            data={items}
-            keyExtractor={i => i.product.id}
-            showsVerticalScrollIndicator={false}
-            style={styles.cartList}
-            renderItem={({ item }) => (
-              <CartRow item={item} onUpdate={updateQuantity} onRemove={removeItem} />
-            )}
-          />
-        )}
-
-        <View style={styles.cartFooter}>
-          <View style={styles.totalRow}>
-            <Text style={styles.totalLabel}>Subtotal</Text>
-            <Text style={styles.totalAmount}>${total.toFixed(2)}</Text>
-          </View>
-          <View style={[styles.totalRow, styles.totalRowTax]}>
-            <Text style={styles.taxLabel}>Tax (8%)</Text>
-            <Text style={styles.taxAmount}>${(total * 0.08).toFixed(2)}</Text>
-          </View>
-          <View style={styles.divider} />
-          <View style={styles.totalRow}>
-            <Text style={styles.grandTotalLabel}>TOTAL</Text>
-            <Text style={styles.grandTotalAmount}>${(total * 1.08).toFixed(2)}</Text>
-          </View>
-
-          <Pressable
-            style={[
-              styles.chargeBtn,
-              items.length === 0 && styles.chargeBtnDisabled,
-              orderSuccess && styles.chargeBtnSuccess,
-            ]}
-            onPress={handleCharge}
-            disabled={items.length === 0 || printing}
-          >
-            {orderSuccess ? (
-              <>
-                <Ionicons name="checkmark-circle" size={22} color="#fff" />
-                <Text style={styles.chargeBtnText}>Sale Complete!</Text>
-              </>
-            ) : printing ? (
-              <>
-                <MaterialCommunityIcons name="printer-outline" size={22} color="#fff" />
-                <Text style={styles.chargeBtnText}>Printing...</Text>
-              </>
-            ) : (
-              <>
-                <MaterialCommunityIcons name="cash-register" size={22} color="#fff" />
-                <Text style={styles.chargeBtnText}>
-                  Charge ${(total * 1.08).toFixed(2)}
-                </Text>
-              </>
-            )}
+        <View style={styles.topBarRight}>
+          <Pressable style={styles.topBarIconBtn} onPress={() => router.push('/settings')}>
+            <Ionicons name="settings-outline" size={20} color={C.textSecondary} />
           </Pressable>
+          <Pressable style={styles.topBarIconBtn} onPress={handleLogout}>
+            <MaterialCommunityIcons name="logout" size={20} color={C.textSecondary} />
+          </Pressable>
+        </View>
+      </View>
 
-          {btStatus === 'connected' && connectedDevice && (
-            <View style={styles.printerBadge}>
-              <MaterialCommunityIcons name="printer-check" size={12} color={C.success} />
-              <Text style={styles.printerBadgeText}>{connectedDevice.name}</Text>
+      {sidebarOpen && (
+        <Pressable style={styles.sidebarOverlay} onPress={() => setSidebarOpen(false)}>
+          <View style={styles.sidebarDropdown}>
+            <SidebarItem icon="view-grid-outline" label="Products" active />
+            <SidebarItem icon="chart-bar" label="Reports" />
+            <SidebarItem icon="account-multiple-outline" label="Customers" />
+            <SidebarItem icon="cog-outline" label="Settings" onPress={() => { setSidebarOpen(false); router.push('/settings'); }} />
+            <View style={styles.sidebarDivider} />
+            <SidebarItem icon="logout" label="Logout" danger onPress={handleLogout} />
+          </View>
+        </Pressable>
+      )}
+
+      <View style={styles.body}>
+        <View style={styles.mainArea}>
+          <FlatList
+            data={filteredProducts}
+            keyExtractor={p => p.id}
+            numColumns={4}
+            key="grid-4"
+            columnWrapperStyle={styles.gridRow}
+            contentContainerStyle={[styles.gridContent, { paddingBottom: 60 + botPad }]}
+            showsVerticalScrollIndicator={false}
+            renderItem={({ item }) => (
+              <ProductCard product={item} onPress={addItem} />
+            )}
+            ListEmptyComponent={
+              <View style={styles.emptyState}>
+                <Feather name="package" size={36} color={C.textMuted} />
+                <Text style={styles.emptyText}>No products found</Text>
+              </View>
+            }
+          />
+
+          <View style={[styles.categoryBar, { bottom: botPad }]}>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.categoryBarContent}
+            >
+              {CATEGORIES.map(cat => (
+                <CategoryTab
+                  key={cat}
+                  label={cat}
+                  selected={selectedCategory === cat}
+                  onPress={() => setSelectedCategory(cat)}
+                />
+              ))}
+            </ScrollView>
+          </View>
+        </View>
+
+        <View style={[styles.cartPanel, { paddingBottom: botPad }]}>
+          <View style={styles.cartTopActions}>
+            <Pressable style={styles.cartActionBtn}>
+              <Ionicons name="person-outline" size={18} color={C.textSecondary} />
+            </Pressable>
+            <Pressable style={styles.cartActionBtn}>
+              <Ionicons name="notifications-outline" size={18} color={C.textSecondary} />
+            </Pressable>
+          </View>
+
+          <View style={styles.orderTypeRow}>
+            <Text style={styles.orderTypeLabel}>Dine In</Text>
+            <View style={styles.orderTypeSelector}>
+              {ORDER_TYPES.map(t => (
+                <Pressable
+                  key={t}
+                  style={[styles.orderTypeChip, orderType === t && styles.orderTypeChipActive]}
+                  onPress={() => setOrderType(t)}
+                >
+                  <Text style={[styles.orderTypeText, orderType === t && styles.orderTypeTextActive]}>
+                    {t}
+                  </Text>
+                </Pressable>
+              ))}
             </View>
+          </View>
+
+          {items.length === 0 ? (
+            <View style={styles.cartEmpty}>
+              <MaterialCommunityIcons name="cart-outline" size={40} color={C.textMuted} />
+              <Text style={styles.cartEmptyText}>No items added</Text>
+            </View>
+          ) : (
+            <FlatList
+              data={items}
+              keyExtractor={i => i.product.id}
+              showsVerticalScrollIndicator={false}
+              style={styles.cartList}
+              renderItem={({ item }) => (
+                <CartRow item={item} onUpdate={updateQuantity} onRemove={removeItem} />
+              )}
+            />
           )}
+
+          <View style={styles.cartFooter}>
+            {items.length > 0 && (
+              <Pressable style={styles.clearRow} onPress={clearCart}>
+                <Feather name="trash-2" size={13} color={C.danger} />
+                <Text style={styles.clearRowText}>Clear order</Text>
+              </Pressable>
+            )}
+
+            <View style={styles.totalsBox}>
+              <TotalRow label="Sub Total (USD)" value={total.toFixed(2)} />
+              <View style={styles.discountRow}>
+                <Text style={styles.totalLabelText}>Discount (USD)</Text>
+                <TextInput
+                  style={styles.discountInput}
+                  value={discount}
+                  onChangeText={setDiscount}
+                  keyboardType="numeric"
+                  selectTextOnFocus
+                />
+              </View>
+              <TotalRow label="Tax and charges (USD)" value={taxAmount.toFixed(2)} />
+              <View style={styles.totalsLine} />
+              <View style={styles.grandTotalRow}>
+                <Text style={styles.grandTotalLabel}>Total (USD)</Text>
+                <View style={styles.grandTotalRight}>
+                  <View style={styles.itemCountBadge}>
+                    <Text style={styles.itemCountText}>{itemCount}</Text>
+                  </View>
+                  <Text style={styles.grandTotalValue}>
+                    {grandTotal > 0 ? grandTotal.toFixed(2) : '0.00'}
+                  </Text>
+                </View>
+              </View>
+            </View>
+
+            {btStatus === 'connected' && connectedDevice && (
+              <View style={styles.printerBadge}>
+                <MaterialCommunityIcons name="printer-check" size={11} color={C.success} />
+                <Text style={styles.printerBadgeText}>{connectedDevice.name}</Text>
+              </View>
+            )}
+
+            <View style={styles.actionBtns}>
+              <Pressable style={styles.saveBtn} disabled={items.length === 0}>
+                <Text style={styles.saveBtnText}>SAVE</Text>
+              </Pressable>
+              <Pressable
+                style={[
+                  styles.chargeBtn,
+                  items.length === 0 && styles.chargeBtnDisabled,
+                  orderSuccess && styles.chargeBtnSuccess,
+                ]}
+                onPress={handleCharge}
+                disabled={items.length === 0 || printing}
+              >
+                {orderSuccess ? (
+                  <Text style={styles.chargeBtnText}>DONE!</Text>
+                ) : printing ? (
+                  <Text style={styles.chargeBtnText}>PRINTING...</Text>
+                ) : (
+                  <Text style={styles.chargeBtnText}>CHARGE</Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
         </View>
       </View>
     </View>
   );
 }
 
-function Sidebar({
-  onLogout,
-  onSettings,
-  btConnected,
-}: {
-  onLogout: () => void;
-  onSettings: () => void;
-  btConnected: boolean;
-}) {
-  return (
-    <View style={styles.sidebar}>
-      <View style={styles.sidebarLogo}>
-        <MaterialCommunityIcons name="point-of-sale" size={26} color={C.accent} />
-      </View>
-
-      <View style={styles.sidebarDivider} />
-
-      <SidebarBtn icon="cog-outline" onPress={onSettings} badge={!btConnected} />
-
-      <View style={{ flex: 1 }} />
-
-      <SidebarBtn icon="logout" onPress={onLogout} danger />
-    </View>
-  );
-}
-
-function SidebarBtn({
+function SidebarItem({
   icon,
-  onPress,
+  label,
+  active,
   danger,
-  badge,
+  onPress,
 }: {
   icon: string;
-  onPress: () => void;
+  label: string;
+  active?: boolean;
   danger?: boolean;
-  badge?: boolean;
+  onPress?: () => void;
 }) {
-  const scale = useSharedValue(1);
-  const animStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: scale.value }],
-  }));
-
   return (
     <Pressable
-      onPressIn={() => { scale.value = withSpring(0.85); }}
-      onPressOut={() => { scale.value = withSpring(1); }}
+      style={[styles.sidebarItem, active && styles.sidebarItemActive]}
       onPress={onPress}
-      style={styles.sidebarBtnContainer}
     >
-      <Animated.View style={[styles.sidebarBtn, animStyle]}>
-        <MaterialCommunityIcons
-          name={icon as any}
-          size={24}
-          color={danger ? C.danger : C.textSecondary}
-        />
-        {badge && (
-          <View style={styles.badgeDot} />
-        )}
-      </Animated.View>
+      <MaterialCommunityIcons
+        name={icon as any}
+        size={20}
+        color={danger ? C.danger : active ? C.accent : C.textSecondary}
+      />
+      <Text style={[
+        styles.sidebarItemText,
+        active && styles.sidebarItemTextActive,
+        danger && styles.sidebarItemTextDanger,
+      ]}>
+        {label}
+      </Text>
     </Pressable>
   );
 }
 
-function CategoryChip({ label, selected, onPress }: { label: string; selected: boolean; onPress: () => void }) {
+function CategoryTab({ label, selected, onPress }: { label: string; selected: boolean; onPress: () => void }) {
   return (
     <Pressable
       onPress={onPress}
-      style={[styles.chip, selected && styles.chipSelected]}
+      style={[styles.categoryTab, selected && styles.categoryTabSelected]}
     >
-      <Text style={[styles.chipText, selected && styles.chipTextSelected]}>
+      <Text style={[styles.categoryTabText, selected && styles.categoryTabTextSelected]}>
         {label}
       </Text>
     </Pressable>
@@ -327,7 +376,12 @@ function ProductCard({ product, onPress }: { product: Product; onPress: (p: Prod
         />
         <View style={styles.productInfo}>
           <Text style={styles.productName} numberOfLines={2}>{product.name}</Text>
-          <Text style={styles.productPrice}>${product.price.toFixed(2)}</Text>
+          <View style={styles.productPriceRow}>
+            <Text style={styles.productPrice}>USD {product.price.toFixed(2)}</Text>
+            <Pressable style={styles.addBtn} onPress={handlePress}>
+              <Feather name="plus" size={13} color="#fff" />
+            </Pressable>
+          </View>
         </View>
       </Animated.View>
     </Pressable>
@@ -344,34 +398,40 @@ function CartRow({
   onRemove: (id: string) => void;
 }) {
   const subtotal = item.product.price * item.quantity;
-
   return (
     <View style={styles.cartRow}>
-      <View style={styles.cartRowInfo}>
-        <Text style={styles.cartItemName} numberOfLines={1}>{item.product.name}</Text>
-        <Text style={styles.cartItemPrice}>${subtotal.toFixed(2)}</Text>
-      </View>
-      <View style={styles.cartRowControls}>
+      <Text style={styles.cartItemQty}>{item.quantity}x</Text>
+      <Text style={styles.cartItemName} numberOfLines={1}>{item.product.name}</Text>
+      <Text style={styles.cartItemPrice}>{subtotal.toFixed(2)}</Text>
+      <View style={styles.cartRowActions}>
         <Pressable
+          style={styles.qtyMiniBtn}
           onPress={() => onUpdate(item.product.id, item.quantity - 1)}
-          style={styles.qtyBtn}
         >
-          <Feather name="minus" size={14} color={C.text} />
+          <Feather name="minus" size={11} color={C.text} />
         </Pressable>
-        <Text style={styles.qtyText}>{item.quantity}</Text>
         <Pressable
+          style={styles.qtyMiniBtn}
           onPress={() => onUpdate(item.product.id, item.quantity + 1)}
-          style={styles.qtyBtn}
         >
-          <Feather name="plus" size={14} color={C.text} />
+          <Feather name="plus" size={11} color={C.text} />
         </Pressable>
         <Pressable
+          style={styles.removeMiniBtn}
           onPress={() => onRemove(item.product.id)}
-          style={styles.removeBtn}
         >
-          <Feather name="x" size={14} color={C.danger} />
+          <Feather name="x" size={11} color={C.danger} />
         </Pressable>
       </View>
+    </View>
+  );
+}
+
+function TotalRow({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.totalRow}>
+      <Text style={styles.totalLabelText}>{label}</Text>
+      <Text style={styles.totalValueText}>{value}</Text>
     </View>
   );
 }
@@ -379,336 +439,441 @@ function CartRow({
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    flexDirection: 'row',
     backgroundColor: C.background,
   },
-  sidebar: {
-    width: 68,
+  topBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
     backgroundColor: C.surface,
-    borderRightWidth: 1,
-    borderRightColor: C.border,
-    alignItems: 'center',
-    paddingVertical: 16,
-    gap: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: C.border,
+    zIndex: 10,
   },
-  sidebarLogo: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    backgroundColor: C.accentDim,
+  topBarLeft: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 4,
+    gap: 10,
+    flex: 1,
   },
-  sidebarDivider: {
+  topBarRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  topBarIconBtn: {
     width: 36,
-    height: 1,
-    backgroundColor: C.border,
-    marginVertical: 4,
-  },
-  sidebarBtnContainer: {
-    padding: 4,
-  },
-  sidebarBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
+    height: 36,
+    borderRadius: 8,
     backgroundColor: C.card,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  badgeDot: {
-    position: 'absolute',
-    top: 6,
-    right: 6,
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: C.warning,
-    borderWidth: 1.5,
-    borderColor: C.card,
-  },
-  mainArea: {
-    flex: 1,
-    backgroundColor: C.background,
-  },
-  searchRow: {
+  pageSelector: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingTop: 16,
-    paddingBottom: 8,
-    gap: 12,
+    backgroundColor: C.card,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    gap: 2,
+    borderWidth: 1,
+    borderColor: C.border,
+  },
+  pageSelectorText: {
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 13,
+    color: C.text,
   },
   searchBox: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: C.surface,
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    gap: 10,
+    backgroundColor: C.card,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    gap: 8,
     borderWidth: 1,
     borderColor: C.border,
+    maxWidth: 320,
   },
   searchInput: {
     flex: 1,
     fontFamily: 'Inter_400Regular',
-    fontSize: 15,
+    fontSize: 14,
     color: C.text,
     padding: 0,
   },
-  categoriesScroll: {
-    maxHeight: 44,
-    marginBottom: 8,
+  sidebarOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 100,
   },
-  categoriesContent: {
-    paddingHorizontal: 16,
-    gap: 8,
-    alignItems: 'center',
-  },
-  chip: {
-    paddingHorizontal: 14,
-    paddingVertical: 6,
-    borderRadius: 20,
-    backgroundColor: C.card,
+  sidebarDropdown: {
+    position: 'absolute',
+    top: 52,
+    left: 12,
+    width: 220,
+    backgroundColor: C.surface,
+    borderRadius: 14,
+    paddingVertical: 8,
     borderWidth: 1,
     borderColor: C.border,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.4,
+    shadowRadius: 16,
+    elevation: 10,
+    gap: 2,
   },
-  chipSelected: {
+  sidebarDivider: {
+    height: 1,
+    backgroundColor: C.border,
+    marginHorizontal: 12,
+    marginVertical: 4,
+  },
+  sidebarItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 11,
+    borderRadius: 10,
+    marginHorizontal: 6,
+  },
+  sidebarItemActive: {
     backgroundColor: C.accentDim,
-    borderColor: C.accent,
   },
-  chipText: {
+  sidebarItemText: {
     fontFamily: 'Inter_500Medium',
-    fontSize: 13,
+    fontSize: 14,
     color: C.textSecondary,
   },
-  chipTextSelected: {
+  sidebarItemTextActive: {
     color: C.accentLight,
   },
+  sidebarItemTextDanger: {
+    color: C.danger,
+  },
+  body: {
+    flex: 1,
+    flexDirection: 'row',
+  },
+  mainArea: {
+    flex: 1,
+    backgroundColor: C.background,
+    position: 'relative',
+  },
   gridContent: {
-    paddingHorizontal: 12,
-    paddingBottom: 16,
+    padding: 10,
     gap: 10,
   },
   gridRow: {
     gap: 10,
-    justifyContent: 'flex-start',
   },
   productCardWrap: {
     flex: 1,
-    maxWidth: '33.3%',
   },
   productCard: {
     backgroundColor: C.card,
-    borderRadius: 16,
+    borderRadius: 12,
     overflow: 'hidden',
     borderWidth: 1,
     borderColor: C.border,
   },
   productImage: {
     width: '100%',
-    aspectRatio: 1,
+    aspectRatio: 1.1,
     backgroundColor: C.surface,
   },
   productInfo: {
-    padding: 10,
-    gap: 2,
+    padding: 8,
+    gap: 4,
   },
   productName: {
     fontFamily: 'Inter_500Medium',
-    fontSize: 13,
+    fontSize: 12,
     color: C.text,
-    lineHeight: 18,
+    lineHeight: 17,
+  },
+  productPriceRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
   productPrice: {
-    fontFamily: 'Inter_700Bold',
-    fontSize: 15,
-    color: C.accent,
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 12,
+    color: C.textSecondary,
+  },
+  addBtn: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    backgroundColor: C.accent,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   emptyState: {
     alignItems: 'center',
     justifyContent: 'center',
     paddingTop: 80,
-    gap: 12,
+    gap: 10,
   },
   emptyText: {
     fontFamily: 'Inter_400Regular',
-    fontSize: 15,
+    fontSize: 14,
     color: C.textMuted,
   },
+  categoryBar: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    backgroundColor: C.surface,
+    borderTopWidth: 1,
+    borderTopColor: C.border,
+    height: 52,
+    justifyContent: 'center',
+  },
+  categoryBarContent: {
+    paddingHorizontal: 10,
+    gap: 6,
+    alignItems: 'center',
+  },
+  categoryTab: {
+    paddingHorizontal: 16,
+    paddingVertical: 7,
+    borderRadius: 8,
+    backgroundColor: C.card,
+  },
+  categoryTabSelected: {
+    backgroundColor: C.accent,
+  },
+  categoryTabText: {
+    fontFamily: 'Inter_500Medium',
+    fontSize: 13,
+    color: C.textSecondary,
+  },
+  categoryTabTextSelected: {
+    color: '#fff',
+  },
   cartPanel: {
-    width: 300,
+    width: 240,
     backgroundColor: C.surface,
     borderLeftWidth: 1,
     borderLeftColor: C.border,
     flexDirection: 'column',
   },
-  cartHeader: {
+  cartTopActions: {
     flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 16,
+    justifyContent: 'flex-end',
+    padding: 10,
+    gap: 6,
     borderBottomWidth: 1,
     borderBottomColor: C.border,
   },
-  cartTitle: {
-    fontFamily: 'Inter_700Bold',
-    fontSize: 18,
+  cartActionBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 8,
+    backgroundColor: C.card,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  orderTypeRow: {
+    padding: 10,
+    gap: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: C.border,
+  },
+  orderTypeLabel: {
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 13,
     color: C.text,
   },
-  clearBtn: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 8,
-    backgroundColor: C.dangerDim,
+  orderTypeSelector: {
+    flexDirection: 'row',
+    gap: 4,
   },
-  clearBtnText: {
-    fontFamily: 'Inter_500Medium',
-    fontSize: 13,
-    color: C.danger,
-  },
-  cartList: {
+  orderTypeChip: {
     flex: 1,
+    paddingVertical: 5,
+    borderRadius: 6,
+    backgroundColor: C.card,
+    alignItems: 'center',
+  },
+  orderTypeChipActive: {
+    backgroundColor: C.accent,
+  },
+  orderTypeText: {
+    fontFamily: 'Inter_500Medium',
+    fontSize: 11,
+    color: C.textSecondary,
+  },
+  orderTypeTextActive: {
+    color: '#fff',
   },
   cartEmpty: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 12,
+    gap: 10,
   },
   cartEmptyText: {
     fontFamily: 'Inter_400Regular',
-    fontSize: 14,
+    fontSize: 13,
     color: C.textMuted,
   },
+  cartList: {
+    flex: 1,
+  },
   cartRow: {
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
     borderBottomWidth: 1,
     borderBottomColor: C.border,
-    gap: 6,
+    gap: 4,
   },
-  cartRowInfo: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
+  cartItemQty: {
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 12,
+    color: C.accent,
+    width: 22,
   },
   cartItemName: {
-    fontFamily: 'Inter_500Medium',
-    fontSize: 13,
+    fontFamily: 'Inter_400Regular',
+    fontSize: 12,
     color: C.text,
     flex: 1,
-    marginRight: 8,
   },
   cartItemPrice: {
     fontFamily: 'Inter_600SemiBold',
-    fontSize: 13,
+    fontSize: 12,
     color: C.text,
   },
-  cartRowControls: {
+  cartRowActions: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
+    gap: 3,
   },
-  qtyBtn: {
-    width: 28,
-    height: 28,
-    borderRadius: 8,
+  qtyMiniBtn: {
+    width: 22,
+    height: 22,
+    borderRadius: 5,
     backgroundColor: C.card,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
     borderColor: C.border,
   },
-  qtyText: {
-    fontFamily: 'Inter_600SemiBold',
-    fontSize: 14,
-    color: C.text,
-    minWidth: 24,
-    textAlign: 'center',
-  },
-  removeBtn: {
-    width: 28,
-    height: 28,
-    borderRadius: 8,
+  removeMiniBtn: {
+    width: 22,
+    height: 22,
+    borderRadius: 5,
     backgroundColor: C.dangerDim,
     alignItems: 'center',
     justifyContent: 'center',
-    marginLeft: 4,
   },
   cartFooter: {
-    padding: 14,
+    paddingHorizontal: 10,
+    paddingTop: 8,
+    paddingBottom: 10,
+    gap: 8,
     borderTopWidth: 1,
     borderTopColor: C.border,
-    gap: 8,
+  },
+  clearRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    justifyContent: 'flex-end',
+  },
+  clearRowText: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 11,
+    color: C.danger,
+  },
+  totalsBox: {
+    gap: 4,
   },
   totalRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
+    alignItems: 'center',
   },
-  totalRowTax: {
-    marginBottom: 2,
-  },
-  totalLabel: {
+  totalLabelText: {
     fontFamily: 'Inter_400Regular',
-    fontSize: 13,
+    fontSize: 12,
     color: C.textSecondary,
   },
-  totalAmount: {
+  totalValueText: {
     fontFamily: 'Inter_500Medium',
-    fontSize: 13,
+    fontSize: 12,
     color: C.textSecondary,
   },
-  taxLabel: {
-    fontFamily: 'Inter_400Regular',
-    fontSize: 12,
-    color: C.textMuted,
+  discountRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
-  taxAmount: {
-    fontFamily: 'Inter_400Regular',
+  discountInput: {
+    fontFamily: 'Inter_500Medium',
     fontSize: 12,
-    color: C.textMuted,
+    color: C.text,
+    backgroundColor: C.card,
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderWidth: 1,
+    borderColor: C.border,
+    width: 60,
+    textAlign: 'right',
   },
-  divider: {
+  totalsLine: {
     height: 1,
     backgroundColor: C.border,
-    marginVertical: 2,
+    marginVertical: 3,
+  },
+  grandTotalRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
   grandTotalLabel: {
     fontFamily: 'Inter_700Bold',
-    fontSize: 15,
-    color: C.text,
-    letterSpacing: 0.5,
-  },
-  grandTotalAmount: {
-    fontFamily: 'Inter_700Bold',
-    fontSize: 18,
+    fontSize: 14,
     color: C.text,
   },
-  chargeBtn: {
-    backgroundColor: C.accent,
-    borderRadius: 14,
-    paddingVertical: 14,
+  grandTotalRight: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 6,
+  },
+  itemCountBadge: {
+    backgroundColor: C.accent,
+    borderRadius: 10,
+    minWidth: 20,
+    height: 20,
+    alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
-    marginTop: 4,
+    paddingHorizontal: 5,
   },
-  chargeBtnDisabled: {
-    opacity: 0.4,
+  itemCountText: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 11,
+    color: '#fff',
   },
-  chargeBtnSuccess: {
-    backgroundColor: C.success,
-  },
-  chargeBtnText: {
+  grandTotalValue: {
     fontFamily: 'Inter_700Bold',
     fontSize: 16,
-    color: '#fff',
+    color: C.text,
   },
   printerBadge: {
     flexDirection: 'row',
@@ -720,5 +885,41 @@ const styles = StyleSheet.create({
     fontFamily: 'Inter_400Regular',
     fontSize: 11,
     color: C.success,
+  },
+  actionBtns: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  saveBtn: {
+    flex: 1,
+    backgroundColor: C.card,
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: C.border,
+  },
+  saveBtnText: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 14,
+    color: C.textSecondary,
+  },
+  chargeBtn: {
+    flex: 1.5,
+    backgroundColor: C.accent,
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  chargeBtnDisabled: {
+    opacity: 0.4,
+  },
+  chargeBtnSuccess: {
+    backgroundColor: C.success,
+  },
+  chargeBtnText: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 14,
+    color: '#fff',
   },
 });
