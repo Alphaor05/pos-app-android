@@ -8,6 +8,7 @@ import {
   FlatList,
   ScrollView,
   Platform,
+  ActivityIndicator,
 } from 'react-native';
 import { Image } from 'expo-image';
 import Animated, {
@@ -15,6 +16,7 @@ import Animated, {
   useAnimatedStyle,
   withSpring,
 } from 'react-native-reanimated';
+import { useQuery } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
@@ -24,16 +26,31 @@ import {
   Feather,
   MaterialIcons,
 } from '@expo/vector-icons';
+import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
 import { useCart, CartItem } from '@/context/CartContext';
 import { useBluetooth } from '@/context/BluetoothContext';
-import { PRODUCTS, CATEGORIES, Product } from '@/data/products';
+import { Product } from '@/data/products';
 import Colors from '@/constants/colors';
 
 const C = Colors.dark;
 
 type OrderType = 'Dine In' | 'Take Away' | 'Delivery';
 const ORDER_TYPES: OrderType[] = ['Dine In', 'Take Away', 'Delivery'];
+
+async function fetchProductsFromSupabase(): Promise<Product[]> {
+  if (!supabase) {
+    throw new Error(
+      'Supabase is not configured. Add EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY to your Replit Secrets.'
+    );
+  }
+  const { data, error } = await supabase
+    .from('products')
+    .select('*')
+    .order('name', { ascending: true });
+  if (error) throw new Error(error.message);
+  return (data ?? []) as Product[];
+}
 
 export default function POSScreen() {
   const { logout } = useAuth();
@@ -52,14 +69,31 @@ export default function POSScreen() {
   const topPad = Platform.OS === 'web' ? 67 : insets.top;
   const botPad = Platform.OS === 'web' ? 34 : insets.bottom;
 
+  const {
+    data: products = [],
+    isLoading,
+    error: fetchError,
+    refetch,
+  } = useQuery<Product[]>({
+    queryKey: ['supabase-products'],
+    queryFn: fetchProductsFromSupabase,
+  });
+
+  const categories = useMemo(() => {
+    const cats = new Set<string>();
+    products.forEach(p => { if (p.category) cats.add(p.category); });
+    return ['All', ...Array.from(cats).sort()];
+  }, [products]);
+
   const filteredProducts = useMemo(() => {
-    return PRODUCTS.filter(p => {
+    return products.filter(p => {
       const matchCat = selectedCategory === 'All' || p.category === selectedCategory;
-      const matchSearch = p.name.toLowerCase().includes(search.toLowerCase()) ||
-        p.sku.toLowerCase().includes(search.toLowerCase());
+      const matchSearch =
+        p.name.toLowerCase().includes(search.toLowerCase()) ||
+        (p.sku ?? '').toLowerCase().includes(search.toLowerCase());
       return matchCat && matchSearch;
     });
-  }, [search, selectedCategory]);
+  }, [products, search, selectedCategory]);
 
   const discountAmount = parseFloat(discount) || 0;
   const taxAmount = total * 0.05;
@@ -77,12 +111,10 @@ export default function POSScreen() {
     if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     if (btStatus === 'connected') {
       setPrinting(true);
-      const receiptItems = items.map(i => ({
-        name: i.product.name,
-        qty: i.quantity,
-        price: i.product.price,
-      }));
-      await printReceipt(receiptItems, grandTotal);
+      await printReceipt(
+        items.map(i => ({ name: i.product.name, qty: i.quantity, price: i.product.price })),
+        grandTotal,
+      );
       setPrinting(false);
     }
     setOrderSuccess(true);
@@ -96,23 +128,18 @@ export default function POSScreen() {
     <View style={[styles.root, { paddingTop: topPad }]}>
       <View style={styles.topBar}>
         <View style={styles.topBarLeft}>
-          <Pressable
-            style={styles.topBarIconBtn}
-            onPress={() => setSidebarOpen(v => !v)}
-          >
+          <Pressable style={styles.topBarIconBtn} onPress={() => setSidebarOpen(v => !v)}>
             <Ionicons name="menu" size={22} color={C.text} />
           </Pressable>
-
           <View style={styles.pageSelector}>
             <Text style={styles.pageSelectorText}>PAGE 1</Text>
             <MaterialIcons name="arrow-drop-down" size={20} color={C.textSecondary} />
           </View>
-
           <View style={styles.searchBox}>
             <Feather name="search" size={16} color={C.textSecondary} />
             <TextInput
               style={styles.searchInput}
-              placeholder="Search..."
+              placeholder="Search products..."
               placeholderTextColor={C.textMuted}
               value={search}
               onChangeText={setSearch}
@@ -124,7 +151,6 @@ export default function POSScreen() {
             )}
           </View>
         </View>
-
         <View style={styles.topBarRight}>
           <Pressable style={styles.topBarIconBtn} onPress={() => router.push('/settings')}>
             <Ionicons name="settings-outline" size={20} color={C.textSecondary} />
@@ -141,7 +167,11 @@ export default function POSScreen() {
             <SidebarItem icon="view-grid-outline" label="Products" active />
             <SidebarItem icon="chart-bar" label="Reports" />
             <SidebarItem icon="account-multiple-outline" label="Customers" />
-            <SidebarItem icon="cog-outline" label="Settings" onPress={() => { setSidebarOpen(false); router.push('/settings'); }} />
+            <SidebarItem
+              icon="cog-outline"
+              label="Settings"
+              onPress={() => { setSidebarOpen(false); router.push('/settings'); }}
+            />
             <View style={styles.sidebarDivider} />
             <SidebarItem icon="logout" label="Logout" danger onPress={handleLogout} />
           </View>
@@ -150,24 +180,41 @@ export default function POSScreen() {
 
       <View style={styles.body}>
         <View style={styles.mainArea}>
-          <FlatList
-            data={filteredProducts}
-            keyExtractor={p => p.id}
-            numColumns={4}
-            key="grid-4"
-            columnWrapperStyle={styles.gridRow}
-            contentContainerStyle={[styles.gridContent, { paddingBottom: 60 + botPad }]}
-            showsVerticalScrollIndicator={false}
-            renderItem={({ item }) => (
-              <ProductCard product={item} onPress={addItem} />
-            )}
-            ListEmptyComponent={
-              <View style={styles.emptyState}>
-                <Feather name="package" size={36} color={C.textMuted} />
-                <Text style={styles.emptyText}>No products found</Text>
-              </View>
-            }
-          />
+          {isLoading ? (
+            <View style={styles.centerState}>
+              <ActivityIndicator size="large" color={C.accent} />
+              <Text style={styles.stateText}>Loading products...</Text>
+            </View>
+          ) : fetchError ? (
+            <View style={styles.centerState}>
+              <MaterialCommunityIcons name="alert-circle-outline" size={44} color={C.danger} />
+              <Text style={styles.stateText}>Failed to load products</Text>
+              <Text style={styles.stateSubText}>{(fetchError as Error).message}</Text>
+              <Pressable style={styles.retryBtn} onPress={() => refetch()}>
+                <Feather name="refresh-cw" size={14} color={C.accent} />
+                <Text style={styles.retryBtnText}>Retry</Text>
+              </Pressable>
+            </View>
+          ) : (
+            <FlatList
+              data={filteredProducts}
+              keyExtractor={p => String(p.id)}
+              numColumns={4}
+              key="grid-4"
+              columnWrapperStyle={styles.gridRow}
+              contentContainerStyle={[styles.gridContent, { paddingBottom: 60 + botPad }]}
+              showsVerticalScrollIndicator={false}
+              renderItem={({ item }) => (
+                <ProductCard product={item} onPress={addItem} />
+              )}
+              ListEmptyComponent={
+                <View style={styles.emptyState}>
+                  <Feather name="package" size={36} color={C.textMuted} />
+                  <Text style={styles.emptyText}>No products found</Text>
+                </View>
+              }
+            />
+          )}
 
           <View style={[styles.categoryBar, { bottom: botPad }]}>
             <ScrollView
@@ -175,7 +222,7 @@ export default function POSScreen() {
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={styles.categoryBarContent}
             >
-              {CATEGORIES.map(cat => (
+              {categories.map(cat => (
                 <CategoryTab
                   key={cat}
                   label={cat}
@@ -222,7 +269,7 @@ export default function POSScreen() {
           ) : (
             <FlatList
               data={items}
-              keyExtractor={i => i.product.id}
+              keyExtractor={i => String(i.product.id)}
               showsVerticalScrollIndicator={false}
               style={styles.cartList}
               renderItem={({ item }) => (
@@ -286,13 +333,9 @@ export default function POSScreen() {
                 onPress={handleCharge}
                 disabled={items.length === 0 || printing}
               >
-                {orderSuccess ? (
-                  <Text style={styles.chargeBtnText}>DONE!</Text>
-                ) : printing ? (
-                  <Text style={styles.chargeBtnText}>PRINTING...</Text>
-                ) : (
-                  <Text style={styles.chargeBtnText}>CHARGE</Text>
-                )}
+                <Text style={styles.chargeBtnText}>
+                  {orderSuccess ? 'DONE!' : printing ? 'PRINTING...' : 'CHARGE'}
+                </Text>
               </Pressable>
             </View>
           </View>
@@ -316,10 +359,7 @@ function SidebarItem({
   onPress?: () => void;
 }) {
   return (
-    <Pressable
-      style={[styles.sidebarItem, active && styles.sidebarItemActive]}
-      onPress={onPress}
-    >
+    <Pressable style={[styles.sidebarItem, active && styles.sidebarItemActive]} onPress={onPress}>
       <MaterialCommunityIcons
         name={icon as any}
         size={20}
@@ -369,15 +409,20 @@ function ProductCard({ product, onPress }: { product: Product; onPress: (p: Prod
     >
       <Animated.View style={[styles.productCard, animStyle]}>
         <Image
-          source={{ uri: product.imageUrl }}
+          source={{ uri: product.image_url }}
           style={styles.productImage}
           contentFit="cover"
           transition={200}
         />
         <View style={styles.productInfo}>
+          {!!product.category && (
+            <Text style={styles.productCategory} numberOfLines={1}>{product.category}</Text>
+          )}
           <Text style={styles.productName} numberOfLines={2}>{product.name}</Text>
           <View style={styles.productPriceRow}>
-            <Text style={styles.productPrice}>USD {product.price.toFixed(2)}</Text>
+            <Text style={styles.productPrice}>
+              USD {typeof product.price === 'number' ? product.price.toFixed(2) : product.price}
+            </Text>
             <Pressable style={styles.addBtn} onPress={handlePress}>
               <Feather name="plus" size={13} color="#fff" />
             </Pressable>
@@ -404,22 +449,13 @@ function CartRow({
       <Text style={styles.cartItemName} numberOfLines={1}>{item.product.name}</Text>
       <Text style={styles.cartItemPrice}>{subtotal.toFixed(2)}</Text>
       <View style={styles.cartRowActions}>
-        <Pressable
-          style={styles.qtyMiniBtn}
-          onPress={() => onUpdate(item.product.id, item.quantity - 1)}
-        >
+        <Pressable style={styles.qtyMiniBtn} onPress={() => onUpdate(String(item.product.id), item.quantity - 1)}>
           <Feather name="minus" size={11} color={C.text} />
         </Pressable>
-        <Pressable
-          style={styles.qtyMiniBtn}
-          onPress={() => onUpdate(item.product.id, item.quantity + 1)}
-        >
+        <Pressable style={styles.qtyMiniBtn} onPress={() => onUpdate(String(item.product.id), item.quantity + 1)}>
           <Feather name="plus" size={11} color={C.text} />
         </Pressable>
-        <Pressable
-          style={styles.removeMiniBtn}
-          onPress={() => onRemove(item.product.id)}
-        >
+        <Pressable style={styles.removeMiniBtn} onPress={() => onRemove(String(item.product.id))}>
           <Feather name="x" size={11} color={C.danger} />
         </Pressable>
       </View>
@@ -570,6 +606,43 @@ const styles = StyleSheet.create({
     backgroundColor: C.background,
     position: 'relative',
   },
+  centerState: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+    paddingBottom: 60,
+  },
+  stateText: {
+    fontFamily: 'Inter_500Medium',
+    fontSize: 15,
+    color: C.textSecondary,
+  },
+  stateSubText: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 13,
+    color: C.textMuted,
+    textAlign: 'center',
+    maxWidth: 320,
+    paddingHorizontal: 20,
+  },
+  retryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: C.accentDim,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: C.accent,
+    marginTop: 4,
+  },
+  retryBtnText: {
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 14,
+    color: C.accent,
+  },
   gridContent: {
     padding: 10,
     gap: 10,
@@ -594,7 +667,14 @@ const styles = StyleSheet.create({
   },
   productInfo: {
     padding: 8,
-    gap: 4,
+    gap: 2,
+  },
+  productCategory: {
+    fontFamily: 'Inter_500Medium',
+    fontSize: 10,
+    color: C.accentLight,
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
   },
   productName: {
     fontFamily: 'Inter_500Medium',
@@ -606,6 +686,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    marginTop: 2,
   },
   productPrice: {
     fontFamily: 'Inter_600SemiBold',

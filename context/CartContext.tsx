@@ -23,10 +23,10 @@ export function CartProvider({ children }: { children: ReactNode }) {
 
   const addItem = (product: Product) => {
     setItems(prev => {
-      const existing = prev.find(i => i.product.id === product.id);
+      const existing = prev.find(i => String(i.product.id) === String(product.id));
       if (existing) {
         return prev.map(i =>
-          i.product.id === product.id
+          String(i.product.id) === String(product.id)
             ? { ...i, quantity: i.quantity + 1 }
             : i
         );
@@ -36,7 +36,7 @@ export function CartProvider({ children }: { children: ReactNode }) {
   };
 
   const removeItem = (productId: string) => {
-    setItems(prev => prev.filter(i => i.product.id !== productId));
+    setItems(prev => prev.filter(i => String(i.product.id) !== productId));
   };
 
   const updateQuantity = (productId: string, quantity: number) => {
@@ -45,7 +45,7 @@ export function CartProvider({ children }: { children: ReactNode }) {
       return;
     }
     setItems(prev =>
-      prev.map(i => i.product.id === productId ? { ...i, quantity } : i)
+      prev.map(i => String(i.product.id) === productId ? { ...i, quantity } : i)
     );
   };
 
