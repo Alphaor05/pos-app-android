@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   View,
   Text,
@@ -9,7 +9,10 @@ import {
   ScrollView,
   Platform,
   ActivityIndicator,
+  useWindowDimensions,
 } from 'react-native';
+import * as Print from 'expo-print';
+import { generateReceiptHtml } from '@/lib/receiptHtml';
 import { Image } from 'expo-image';
 import Animated, {
   useSharedValue,
@@ -55,8 +58,11 @@ async function fetchProductsFromSupabase(): Promise<Product[]> {
 export default function POSScreen() {
   const { logout } = useAuth();
   const { items, addItem, removeItem, updateQuantity, clearCart, total } = useCart();
-  const { connectedDevice, status: btStatus, printReceipt } = useBluetooth();
+  const { connectedDevice, status: btStatus } = useBluetooth();
   const insets = useSafeAreaInsets();
+  const { width } = useWindowDimensions();
+
+  const numColumns = width < 768 ? 2 : width < 1200 ? 4 : 5;
 
   const [search, setSearch] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
@@ -100,6 +106,34 @@ export default function POSScreen() {
   const grandTotal = total - discountAmount + taxAmount;
   const itemCount = items.reduce((s, i) => s + i.quantity, 0);
 
+  useEffect(() => {
+    if (!supabase) return;
+    const channel = supabase
+      .channel('receipt_printer')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'transaction_receipts' },
+        async (payload: any) => {
+          try {
+            const row = payload.new as Record<string, any>;
+            const html = generateReceiptHtml({
+              orderId: row.order_id ?? row.id,
+              orderType: row.order_type ?? 'Dine In',
+              items: Array.isArray(row.items) ? row.items : [],
+              subtotal: Number(row.subtotal ?? 0),
+              discount: Number(row.discount ?? 0),
+              tax: Number(row.tax ?? 0),
+              total: Number(row.total ?? 0),
+              createdAt: row.created_at ?? new Date().toISOString(),
+            });
+            await Print.printAsync({ html });
+          } catch (_) {}
+        }
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, []);
+
   const handleLogout = () => {
     if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     logout();
@@ -109,12 +143,37 @@ export default function POSScreen() {
   const handleCharge = async () => {
     if (items.length === 0) return;
     if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    if (btStatus === 'connected') {
+    const orderId = Date.now().toString() + Math.random().toString(36).substr(2, 6);
+    const receiptItems = items.map(i => ({
+      name: i.product.name,
+      quantity: i.quantity,
+      price: i.product.price,
+    }));
+    if (supabase) {
       setPrinting(true);
-      await printReceipt(
-        items.map(i => ({ name: i.product.name, qty: i.quantity, price: i.product.price })),
-        grandTotal,
-      );
+      try {
+        await supabase.from('transaction_receipts').insert({
+          order_id: orderId,
+          order_type: orderType,
+          items: receiptItems,
+          subtotal: total,
+          discount: discountAmount,
+          tax: taxAmount,
+          total: grandTotal,
+        });
+      } catch (_) {
+        const html = generateReceiptHtml({
+          orderId,
+          orderType,
+          items: receiptItems,
+          subtotal: total,
+          discount: discountAmount,
+          tax: taxAmount,
+          total: grandTotal,
+          createdAt: new Date().toISOString(),
+        });
+        try { await Print.printAsync({ html }); } catch (_2) {}
+      }
       setPrinting(false);
     }
     setOrderSuccess(true);
@@ -199,8 +258,8 @@ export default function POSScreen() {
             <FlatList
               data={filteredProducts}
               keyExtractor={p => String(p.id)}
-              numColumns={4}
-              key="grid-4"
+              numColumns={numColumns}
+              key={`grid-${numColumns}`}
               columnWrapperStyle={styles.gridRow}
               contentContainerStyle={[styles.gridContent, { paddingBottom: 60 + botPad }]}
               showsVerticalScrollIndicator={false}
