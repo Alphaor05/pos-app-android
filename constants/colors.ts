@@ -18,6 +18,7 @@ export default {
     danger: DANGER,
     dangerDim: "rgba(220, 38, 38, 0.15)",
     warning: WARNING,
+    warningDim: "rgba(217, 119, 6, 0.15)",
     text: "#F0F6FC",
     textSecondary: "#8B949E",
     textMuted: "#484F58",

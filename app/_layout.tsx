@@ -16,6 +16,9 @@ import {
   Inter_600SemiBold,
   Inter_700Bold,
 } from "@expo-google-fonts/inter";
+import { useEffect } from 'react';
+import { initDb } from '@/lib/offlineDb';
+import { initSync } from '@/lib/sync';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -25,6 +28,7 @@ function RootLayoutNav() {
       <Stack.Screen name="index" />
       <Stack.Screen name="pos" />
       <Stack.Screen name="settings" />
+      <Stack.Screen name="sales" />
     </Stack>
   );
 }
@@ -41,6 +45,9 @@ export default function RootLayout() {
     if (fontsLoaded) {
       SplashScreen.hideAsync();
     }
+    // prepare local storage and background sync
+    initDb();
+    initSync();
   }, [fontsLoaded]);
 
   if (!fontsLoaded) return null;

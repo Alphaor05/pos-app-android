@@ -6,7 +6,7 @@ export interface ReceiptItem {
 
 export interface ReceiptData {
   orderId: string;
-  orderType: string;
+  orderType?: string; // retail-only; default handled below
   items: ReceiptItem[];
   subtotal: number;
   discount: number;
@@ -156,12 +156,7 @@ export function generateReceiptHtml(receipt: ReceiptData): string {
         <div>${dateStr}</div>
         <div>${timeStr}</div>
       </div>
-      <div class="order-type-badge">${receipt.orderType.toUpperCase()}</div>
-    </div>
-
-    <table>
-      <thead>
-        <tr>
+      <div class="order-type-badge">${(receipt.orderType ?? 'RETAIL').toUpperCase()}</div>
           <th style="text-align:left;">Item</th>
           <th>Qty</th>
           <th style="text-align:right;">Amount</th>

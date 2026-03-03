@@ -38,8 +38,7 @@ import Colors from '@/constants/colors';
 
 const C = Colors.dark;
 
-type OrderType = 'Dine In' | 'Take Away' | 'Delivery';
-const ORDER_TYPES: OrderType[] = ['Dine In', 'Take Away', 'Delivery'];
+// retail-only, order types removed
 
 async function fetchProductsFromSupabase(): Promise<Product[]> {
   if (!supabase) {
@@ -68,7 +67,7 @@ export default function POSScreen() {
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [printing, setPrinting] = useState(false);
   const [orderSuccess, setOrderSuccess] = useState(false);
-  const [orderType, setOrderType] = useState<OrderType>('Dine In');
+  // orderType removed for retail use
   const [discount, setDiscount] = useState('0');
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -105,6 +104,17 @@ export default function POSScreen() {
   const taxAmount = total * 0.05;
   const grandTotal = total - discountAmount + taxAmount;
   const itemCount = items.reduce((s, i) => s + i.quantity, 0);
+
+  const [pendingCount, setPendingCount] = useState(0);
+  const refreshPending = async () => {
+    const { getPendingSales } = await import('@/lib/offlineDb');
+    const list = await getPendingSales();
+    setPendingCount(list.length);
+  };
+
+  useEffect(() => {
+    refreshPending();
+  }, []);
 
   useEffect(() => {
     if (!supabase) return;
@@ -149,22 +159,32 @@ export default function POSScreen() {
       quantity: i.quantity,
       price: i.product.price,
     }));
-    if (supabase) {
+    const saleRecord = {
+      orderId,
+      items: receiptItems,
+      subtotal: total,
+      discount: discountAmount,
+      tax: taxAmount,
+      total: grandTotal,
+      createdAt: new Date().toISOString(),
+    };
+    // always queue the sale locally; sync layer will push when online
+    try {
+      const { queueSale } = await import('@/lib/offlineDb');
+      await queueSale(saleRecord);
+      refreshPending();
+    } catch (e) {
+      console.warn('failed to queue sale', e);
+    }
+    // attempt a quick sync; sync module also listens for connectivity
+    import('@/lib/sync').then(({ syncSalesQueue }) => syncSalesQueue());
+
+    if (supabase && !printing) {
       setPrinting(true);
       try {
-        await supabase.from('transaction_receipts').insert({
-          order_id: orderId,
-          order_type: orderType,
-          items: receiptItems,
-          subtotal: total,
-          discount: discountAmount,
-          tax: taxAmount,
-          total: grandTotal,
-        });
-      } catch (_) {
         const html = generateReceiptHtml({
           orderId,
-          orderType,
+          orderType: 'RETAIL',
           items: receiptItems,
           subtotal: total,
           discount: discountAmount,
@@ -172,10 +192,14 @@ export default function POSScreen() {
           total: grandTotal,
           createdAt: new Date().toISOString(),
         });
-        try { await Print.printAsync({ html }); } catch (_2) {}
+        // try to print immediately if connected
+        await Print.printAsync({ html });
+      } catch (_) {
+        // ignore print errors
       }
       setPrinting(false);
     }
+
     setOrderSuccess(true);
     setTimeout(() => {
       clearCart();
@@ -224,6 +248,7 @@ export default function POSScreen() {
         <Pressable style={styles.sidebarOverlay} onPress={() => setSidebarOpen(false)}>
           <View style={styles.sidebarDropdown}>
             <SidebarItem icon="view-grid-outline" label="Products" active />
+            <SidebarItem icon="cart-outline" label="Sales" onPress={() => { setSidebarOpen(false); router.push('/sales'); }} />
             <SidebarItem icon="chart-bar" label="Reports" />
             <SidebarItem icon="account-multiple-outline" label="Customers" />
             <SidebarItem
@@ -303,22 +328,6 @@ export default function POSScreen() {
             </Pressable>
           </View>
 
-          <View style={styles.orderTypeRow}>
-            <Text style={styles.orderTypeLabel}>Dine In</Text>
-            <View style={styles.orderTypeSelector}>
-              {ORDER_TYPES.map(t => (
-                <Pressable
-                  key={t}
-                  style={[styles.orderTypeChip, orderType === t && styles.orderTypeChipActive]}
-                  onPress={() => setOrderType(t)}
-                >
-                  <Text style={[styles.orderTypeText, orderType === t && styles.orderTypeTextActive]}>
-                    {t}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-          </View>
 
           {items.length === 0 ? (
             <View style={styles.cartEmpty}>
@@ -342,6 +351,11 @@ export default function POSScreen() {
               <Pressable style={styles.clearRow} onPress={clearCart}>
                 <Feather name="trash-2" size={13} color={C.danger} />
                 <Text style={styles.clearRowText}>Clear order</Text>
+              </Pressable>
+            )}
+            {items.length > 0 && (
+              <Pressable style={styles.voidBtn} onPress={() => { clearCart(); if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning); }}>
+                <Text style={styles.voidBtnText}>VOID</Text>
               </Pressable>
             )}
 
@@ -376,6 +390,11 @@ export default function POSScreen() {
               <View style={styles.printerBadge}>
                 <MaterialCommunityIcons name="printer-check" size={11} color={C.success} />
                 <Text style={styles.printerBadgeText}>{connectedDevice.name}</Text>
+              </View>
+            )}
+            {pendingCount > 0 && (
+              <View style={styles.pendingBadge}>
+                <Text style={styles.pendingBadgeText}>{pendingCount} pending</Text>
               </View>
             )}
 
@@ -1061,5 +1080,31 @@ const styles = StyleSheet.create({
     fontFamily: 'Inter_700Bold',
     fontSize: 14,
     color: '#fff',
+  },
+  voidBtn: {
+    marginTop: 4,
+    backgroundColor: C.dangerDim,
+    borderRadius: 10,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  voidBtnText: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 14,
+    color: C.danger,
+  },
+  pendingBadge: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    backgroundColor: C.warningDim,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 8,
+  },
+  pendingBadgeText: {
+    fontFamily: 'Inter_500Medium',
+    fontSize: 10,
+    color: C.warning,
   },
 });

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -25,6 +25,29 @@ export default function SettingsScreen() {
   const topPad = Platform.OS === 'web' ? 67 : insets.top;
   const botPad = Platform.OS === 'web' ? 34 : insets.bottom;
 
+  const [shopId, setShopId] = useState<string>('');
+  const [shopSaved, setShopSaved] = useState(false);
+
+  useEffect(() => {
+    import('@/lib/settings').then(({ getShopId }) => {
+      getShopId().then(id => {
+        if (id) setShopId(id);
+      });
+    });
+  }, []);
+
+  const handleSaveShop = async () => {
+    const trimmed = shopId.trim();
+    const { setShopId } = await import('@/lib/settings');
+    if (trimmed.length === 0) {
+      await setShopId(null);
+    } else {
+      await setShopId(trimmed);
+    }
+    setShopSaved(true);
+    setTimeout(() => setShopSaved(false), 2500);
+  };
+
   return (
     <View style={[styles.root, { paddingTop: topPad, paddingBottom: botPad }]}>
       <View style={styles.header}>
@@ -39,6 +62,29 @@ export default function SettingsScreen() {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <MaterialCommunityIcons name="storefront-outline" size={18} color={C.accent} />
+            <Text style={styles.sectionTitle}>Shop Information</Text>
+          </View>
+          <Text style={styles.settingLabel}>Shop ID (used for stock deductions)</Text>
+          <View style={styles.manualEntryRow}>
+            <TextInput
+              style={[styles.manualEntryInput, { flex: 1 }]}
+              value={shopId}
+              onChangeText={setShopId}
+              placeholder="e.g. 001"
+              placeholderTextColor={C.textMuted}
+            />
+            <Pressable
+              onPress={handleSaveShop}
+              style={[styles.manualSaveBtn, !shopId && styles.manualSaveBtnDisabled]}
+              disabled={!shopId.trim() && !shopSaved}
+            >
+              <Text style={styles.manualSaveBtnText}>{shopSaved ? 'Saved!' : 'Set'}</Text>
+            </Pressable>
+          </View>
+        </View>
         <BluetoothSection />
         <PinSection />
         <AboutSection />
@@ -352,6 +398,12 @@ const styles = StyleSheet.create({
     fontFamily: 'Inter_600SemiBold',
     fontSize: 15,
     color: C.text,
+  },
+  settingLabel: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 13,
+    color: C.textSecondary,
+    marginBottom: 6,
   },
   connectedCard: {
     backgroundColor: C.successDim,
