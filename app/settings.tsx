@@ -25,27 +25,33 @@ export default function SettingsScreen() {
   const topPad = Platform.OS === 'web' ? 67 : insets.top;
   const botPad = Platform.OS === 'web' ? 34 : insets.bottom;
 
-  const [shopId, setShopId] = useState<string>('');
-  const [shopSaved, setShopSaved] = useState(false);
+  const [posId, setPosId] = useState<string>('');
+  const [posSaved, setPosSaved] = useState(false);
+  const [shops, setShops] = useState<Array<{id:string;name:string}>>([]);
 
   useEffect(() => {
-    import('@/lib/settings').then(({ getShopId }) => {
-      getShopId().then(id => {
-        if (id) setShopId(id);
-      });
-    });
+    (async () => {
+      const { getPosId, listShops } = await import('@/lib/settings');
+      const id = await getPosId();
+      if (id) setPosId(id);
+      const list = await listShops();
+      setShops(list);
+    })();
   }, []);
 
-  const handleSaveShop = async () => {
-    const trimmed = shopId.trim();
-    const { setShopId } = await import('@/lib/settings');
+  const handleSavePos = async (idToSave?: string) => {
+    const trimmed = (idToSave ?? posId).trim();
+    console.log('Settings: saving pos/shop id', trimmed);
+    const { setPosId } = await import('@/lib/settings');
     if (trimmed.length === 0) {
-      await setShopId(null);
+      await setPosId(null);
+      setPosId('');
     } else {
-      await setShopId(trimmed);
+      await setPosId(trimmed);
+      setPosId(trimmed);
     }
-    setShopSaved(true);
-    setTimeout(() => setShopSaved(false), 2500);
+    setPosSaved(true);
+    setTimeout(() => setPosSaved(false), 2500);
   };
 
   return (
@@ -65,23 +71,39 @@ export default function SettingsScreen() {
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <MaterialCommunityIcons name="storefront-outline" size={18} color={C.accent} />
-            <Text style={styles.sectionTitle}>Shop Information</Text>
+            <Text style={styles.sectionTitle}>Terminal / Shop</Text>
           </View>
-          <Text style={styles.settingLabel}>Shop ID (used for stock deductions)</Text>
+          <Text style={styles.settingLabel}>Select or enter POS ID</Text>
+          {shops.length > 0 && (
+            <View style={{ marginBottom: 10 }}>
+              {shops.map(s => (
+                <Pressable
+                  key={s.id}
+                  style={[
+                    styles.shopRow,
+                    posId === s.id && styles.shopRowSelected,
+                  ]}
+                  onPress={() => handleSavePos(s.id)}
+                >
+                  <Text style={styles.shopRowText}>{s.name} ({s.id})</Text>
+                </Pressable>
+              ))}
+            </View>
+          )}
           <View style={styles.manualEntryRow}>
             <TextInput
               style={[styles.manualEntryInput, { flex: 1 }]}
-              value={shopId}
-              onChangeText={setShopId}
-              placeholder="e.g. 001"
+              value={posId}
+              onChangeText={setPosId}
+              placeholder="e.g. POS-01"
               placeholderTextColor={C.textMuted}
             />
             <Pressable
-              onPress={handleSaveShop}
-              style={[styles.manualSaveBtn, !shopId && styles.manualSaveBtnDisabled]}
-              disabled={!shopId.trim() && !shopSaved}
+              onPress={() => handleSavePos()}
+              style={[styles.manualSaveBtn, !posId && styles.manualSaveBtnDisabled]}
+              disabled={!posId.trim() && !posSaved}
             >
-              <Text style={styles.manualSaveBtnText}>{shopSaved ? 'Saved!' : 'Set'}</Text>
+              <Text style={styles.manualSaveBtnText}>{posSaved ? 'Saved!' : 'Set'}</Text>
             </Pressable>
           </View>
         </View>
@@ -701,6 +723,21 @@ const styles = StyleSheet.create({
   },
   aboutValue: {
     fontFamily: 'Inter_500Medium',
+    fontSize: 14,
+    color: C.text,
+  },
+  shopRow: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: C.card,
+    marginBottom: 4,
+  },
+  shopRowSelected: {
+    backgroundColor: C.accentDim,
+  },
+  shopRowText: {
+    fontFamily: 'Inter_400Regular',
     fontSize: 14,
     color: C.text,
   },

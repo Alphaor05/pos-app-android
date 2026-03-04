@@ -1,17 +1,83 @@
-import * as SQLite from 'expo-sqlite';
+import { Platform } from 'react-native';
 
-const db = SQLite.openDatabaseSync('pos.db');
+let db: any = null;
+
+function getDb() {
+  if (db) return db;
+  if (Platform.OS === 'web') return null;
+  const SQLite = require('expo-sqlite');
+  db = SQLite.openDatabaseSync('pos.db');
+  return db;
+}
 
 export interface SaleRecord {
   id: string;
+  // `data` may contain whatever we queued for the sale.  after the
+  // recent changes it will typically include `orderId`, totals and an
+  // optional `posId` attribute so the backend knows which terminal
+  // originated the transaction.
   data: Record<string, any>;
   synced: boolean;
   created_at: string;
 }
 
+// simple in-memory queue for web
+const webQueue: SaleRecord[] = [];
+
+export interface ProductRecord {
+  id: string;
+  name: string;
+  price: number;
+  category?: string;
+  image_url?: string;
+}
+
+const WEB_SAMPLE_PRODUCTS: ProductRecord[] = [
+  { id: '1', name: 'Bread White', price: 1.2, category: 'Bakery' },
+  { id: '2', name: 'Butter 250g', price: 6.0, category: 'Dairy' },
+  { id: '3', name: 'Coca Cola 330ml', price: 2.5, category: 'Beverages' },
+];
+
+export function getProducts(): Promise<ProductRecord[]> {
+  if (Platform.OS === 'web') {
+    // return sample list for web since sqlite not available
+    return Promise.resolve(WEB_SAMPLE_PRODUCTS);
+  }
+  const localDb = getDb();
+  if (!localDb) return Promise.resolve([]);
+  return new Promise((resolve) => {
+    try {
+      const rows = localDb.getAllSync(`SELECT * FROM products ORDER BY name ASC;`);
+      resolve(rows);
+    } catch (e) {
+      resolve([]);
+    }
+  });
+}
+
+export function addProduct(p: ProductRecord): Promise<void> {
+  if (Platform.OS === 'web') return Promise.resolve();
+  const localDb = getDb();
+  if (!localDb) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    try {
+      localDb.runSync(
+        `INSERT OR REPLACE INTO products (id, name, price, category, image_url) VALUES (?, ?, ?, ?, ?);`,
+        [p.id, p.name, p.price, p.category || null, p.image_url || null]
+      );
+      resolve();
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
 export function initDb() {
+  const localDb = getDb();
+  if (!localDb) return; // web – nothing to do
+
   try {
-    db.execSync(`
+    localDb.execSync(`
       CREATE TABLE IF NOT EXISTS products (
         id TEXT PRIMARY KEY,
         name TEXT,
@@ -21,7 +87,7 @@ export function initDb() {
       );
     `);
 
-    db.execSync(`
+    localDb.execSync(`
       CREATE TABLE IF NOT EXISTS store_inventory (
         id TEXT PRIMARY KEY,
         product_id TEXT,
@@ -30,7 +96,7 @@ export function initDb() {
       );
     `);
 
-    db.execSync(`
+    localDb.execSync(`
       CREATE TABLE IF NOT EXISTS sales_queue (
         id TEXT PRIMARY KEY,
         data TEXT,
@@ -38,12 +104,42 @@ export function initDb() {
         created_at TEXT
       );
     `);
+
+    // seed a couple items if products table is empty
+    const countRow = localDb.getFirstSync(`SELECT COUNT(*) as c FROM products;`);
+    if (countRow && countRow.c === 0) {
+      const samples = [
+        { id: '1', name: 'Bread White', price: 1.2, category: 'Bakery' },
+        { id: '2', name: 'Butter 250g', price: 6.0, category: 'Dairy' },
+      ];
+      samples.forEach(p => {
+        localDb.runSync(
+          `INSERT INTO products (id, name, price, category) VALUES (?, ?, ?, ?);`,
+          [p.id, p.name, p.price, p.category]
+        );
+      });
+    }
   } catch (e) {
     console.warn('DB init error (may be benign if tables exist):', e);
   }
 }
 
+
 export function queueSale(sale: any): Promise<void> {
+  if (Platform.OS === 'web') {
+    return new Promise((resolve) => {
+      const id = sale.orderId || Date.now().toString() + Math.random().toString(36).substr(2, 6);
+      const rec: SaleRecord = {
+        id,
+        data: sale,
+        synced: false,
+        created_at: new Date().toISOString(),
+      };
+      webQueue.push(rec);
+      resolve();
+    });
+  }
+
   return new Promise((resolve, reject) => {
     try {
       const id = sale.orderId || Date.now().toString() + Math.random().toString(36).substr(2, 6);
@@ -61,6 +157,10 @@ export function queueSale(sale: any): Promise<void> {
 }
 
 export function getPendingSales(): Promise<SaleRecord[]> {
+  if (Platform.OS === 'web') {
+    return Promise.resolve(webQueue.filter(r => !r.synced));
+  }
+
   return new Promise((resolve, reject) => {
     try {
       const rows = db.getAllSync(`SELECT * FROM sales_queue WHERE synced = 0;`);
@@ -78,6 +178,10 @@ export function getPendingSales(): Promise<SaleRecord[]> {
 }
 
 export function getAllSales(): Promise<SaleRecord[]> {
+  if (Platform.OS === 'web') {
+    return Promise.resolve([...webQueue].sort((a, b) => b.created_at.localeCompare(a.created_at)));
+  }
+
   return new Promise((resolve, reject) => {
     try {
       const rows = db.getAllSync(`SELECT * FROM sales_queue ORDER BY created_at DESC;`);
@@ -95,6 +199,14 @@ export function getAllSales(): Promise<SaleRecord[]> {
 }
 
 export function markSaleSynced(id: string): Promise<void> {
+  if (Platform.OS === 'web') {
+    return new Promise((resolve) => {
+      const rec = webQueue.find(r => r.id === id);
+      if (rec) rec.synced = true;
+      resolve();
+    });
+  }
+
   return new Promise((resolve, reject) => {
     try {
       db.runSync(

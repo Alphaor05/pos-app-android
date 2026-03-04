@@ -1,15 +1,44 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { supabase } from './supabase';
 
-const SHOP_ID_KEY = 'shop_id';
+// persisted key for the terminal/pos identifier that this device represents
+const POS_ID_KEY = 'pos_id';
 
-export async function setShopId(id: string | null): Promise<void> {
+/**
+ * Persist the currently selected terminal/pos id.  `null` clears the value.
+ */
+export async function setPosId(id: string | null): Promise<void> {
   if (id === null) {
-    await AsyncStorage.removeItem(SHOP_ID_KEY);
+    await AsyncStorage.removeItem(POS_ID_KEY);
   } else {
-    await AsyncStorage.setItem(SHOP_ID_KEY, id);
+    await AsyncStorage.setItem(POS_ID_KEY, id);
   }
 }
 
-export async function getShopId(): Promise<string | null> {
-  return AsyncStorage.getItem(SHOP_ID_KEY);
+/**
+ * Return the stored pos id (or null if none has been chosen yet).
+ */
+export async function getPosId(): Promise<string | null> {
+  return AsyncStorage.getItem(POS_ID_KEY);
+}
+
+// legacy helpers that mirror the old "shop" naming; kept for backward
+// compatibility with code that already imported them.
+export { setPosId as setShopId, getPosId as getShopId };
+
+/**
+ * Fetch a list of shops/terminals from Supabase so the user can pick one.
+ * Assumes a `shops` or `pos_terminals` table with at minimum `id`/`name`.
+ */
+export async function listShops(): Promise<Array<{id: string; name: string}>> {
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from('shops')
+    .select('id,name')
+    .limit(50);
+  if (error) {
+    console.warn('Failed to load shop list', error);
+    return [];
+  }
+  return (data as any[]) || [];
 }

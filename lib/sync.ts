@@ -1,7 +1,7 @@
 import NetInfo from '@react-native-community/netinfo';
 import { getPendingSales, markSaleSynced } from './offlineDb';
 import { supabase } from './supabase';
-import { getShopId } from './settings';
+import { getPosId } from './settings';
 
 let syncing = false;
 
@@ -21,17 +21,24 @@ export async function syncSalesQueue() {
   try {
     const pending = await getPendingSales();
     if (pending.length === 0) return;
-    const shopId = await getShopId();
+    const posId = await getPosId();
+    console.log('syncSalesQueue: posId', posId, 'pending', pending.length);
     for (const rec of pending) {
       try {
         if (!supabase) throw new Error('Supabase not configured');
         // insert receipt row (same structure used by handleCharge)
         await supabase.from('transaction_receipts').insert(rec.data);
-        // call stock deduction RPC with shop id
-        await supabase.rpc('deduct_stock', {
-          shop_id: shopId,
-          items: rec.data.items,
-        });
+        if (posId) {
+          // call POS sale RPC; backend will subtract inventory for the
+          // specified shop_id.  we pass order identifier too for logging.
+          await supabase.rpc('handle_pos_sale', {
+            shop_id: posId,
+            items: rec.data.items,
+            order_id: rec.data.orderId || rec.data.order_id,
+          });
+        } else {
+          console.warn('syncSalesQueue: no shop_id, skipping handle_pos_sale');
+        }
         await markSaleSynced(rec.id);
       } catch (err) {
         console.warn('Failed to sync sale', rec.id, err);

@@ -19,7 +19,7 @@ import Animated, {
   useAnimatedStyle,
   withSpring,
 } from 'react-native-reanimated';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
@@ -41,16 +41,46 @@ const C = Colors.dark;
 // retail-only, order types removed
 
 async function fetchProductsFromSupabase(): Promise<Product[]> {
+  console.log('fetchProductsFromSupabase called, supabase client:', supabase);
   if (!supabase) {
-    throw new Error(
-      'Supabase is not configured. Add EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY to your Replit Secrets.'
-    );
+    console.warn('fetchProducts: supabase client missing – using local cache');
+    // no network client; fall back to local cache (mutable during development)
+    try {
+      const { getProducts } = await import('@/lib/offlineDb');
+      const local = await getProducts();
+      // convert ProductRecord -> Product shape
+      return local.map(p => ({
+        id: Number(p.id),
+        name: p.name,
+        price: p.price,
+        category: p.category,
+        image_url: p.image_url,
+      }));
+    } catch (_e) {
+      return [];
+    }
   }
   const { data, error } = await supabase
     .from('products')
     .select('*')
     .order('name', { ascending: true });
-  if (error) throw new Error(error.message);
+  console.log('fetchProductsFromSupabase →', data, error);
+  if (error) {
+    // try local fallback on fetch error
+    try {
+      const { getProducts } = await import('@/lib/offlineDb');
+      const local = await getProducts();
+      return local.map(p => ({
+        id: Number(p.id),
+        name: p.name,
+        price: p.price,
+        category: p.category,
+        image_url: p.image_url,
+      }));
+    } catch (_err) {
+      throw new Error(error.message);
+    }
+  }
   return (data ?? []) as Product[];
 }
 
@@ -65,7 +95,6 @@ export default function POSScreen() {
 
   const [search, setSearch] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
-  const [printing, setPrinting] = useState(false);
   const [orderSuccess, setOrderSuccess] = useState(false);
   // orderType removed for retail use
   const [discount, setDiscount] = useState('0');
@@ -83,6 +112,15 @@ export default function POSScreen() {
     queryKey: ['supabase-products'],
     queryFn: fetchProductsFromSupabase,
   });
+
+  // shop/terminal id pulled from settings; used to guard charge & rpc calls
+  const [shopId, setShopId] = useState<string | null>(null);
+  useEffect(() => {
+    import('@/lib/settings').then(({ getPosId }) => {
+      getPosId().then(id => setShopId(id));
+    });
+  }, []);
+
 
   const categories = useMemo(() => {
     const cats = new Set<string>();
@@ -116,6 +154,8 @@ export default function POSScreen() {
     refreshPending();
   }, []);
 
+  // listen for receipts coming back from Supabase; the server
+  // or another terminal may insert rows and we want to print them
   useEffect(() => {
     if (!supabase) return;
     const channel = supabase
@@ -144,6 +184,40 @@ export default function POSScreen() {
     return () => { supabase.removeChannel(channel); };
   }, []);
 
+  // subscribe to product changes so the grid updates automatically
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    if (!supabase) {
+      console.warn('realtime listener aborted because supabase is null');
+      return;
+    }
+    console.log('creating realtime subscription to products');
+    const prodChannel = supabase
+      .channel('products_listener')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'products' }, async (payload) => {
+        console.log('product INSERT payload', payload);
+        queryClient.invalidateQueries(['supabase-products']);
+        try {
+          const { addProduct } = await import('@/lib/offlineDb');
+          await addProduct(payload.new as any);
+        } catch {}
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'products' }, async (payload) => {
+        console.log('product UPDATE payload', payload);
+        queryClient.invalidateQueries(['supabase-products']);
+        try {
+          const { addProduct } = await import('@/lib/offlineDb');
+          await addProduct(payload.new as any);
+        } catch {}
+      })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'products' }, (payload) => {
+        console.log('product DELETE payload', payload);
+        queryClient.invalidateQueries(['supabase-products']);
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(prodChannel); };
+  }, [queryClient]);
+
   const handleLogout = () => {
     if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     logout();
@@ -152,6 +226,13 @@ export default function POSScreen() {
 
   const handleCharge = async () => {
     if (items.length === 0) return;
+
+    // require a saved shop/terminal id
+    if (!shopId) {
+      Alert.alert('Missing shop ID', 'Please set your shop/terminal in Settings before charging.');
+      return;
+    }
+
     if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     const orderId = Date.now().toString() + Math.random().toString(36).substr(2, 6);
     const receiptItems = items.map(i => ({
@@ -159,7 +240,8 @@ export default function POSScreen() {
       quantity: i.quantity,
       price: i.product.price,
     }));
-    const saleRecord = {
+
+    const saleRecord: any = {
       orderId,
       items: receiptItems,
       subtotal: total,
@@ -167,8 +249,10 @@ export default function POSScreen() {
       tax: taxAmount,
       total: grandTotal,
       createdAt: new Date().toISOString(),
+      shopId,
     };
-    // always queue the sale locally; sync layer will push when online
+
+    // Always queue the sale locally for offline support
     try {
       const { queueSale } = await import('@/lib/offlineDb');
       await queueSale(saleRecord);
@@ -176,29 +260,22 @@ export default function POSScreen() {
     } catch (e) {
       console.warn('failed to queue sale', e);
     }
-    // attempt a quick sync; sync module also listens for connectivity
-    import('@/lib/sync').then(({ syncSalesQueue }) => syncSalesQueue());
 
-    if (supabase && !printing) {
-      setPrinting(true);
+    // When online, call the dedicated RPC to deduct stock immediately
+    if (supabase) {
       try {
-        const html = generateReceiptHtml({
-          orderId,
-          orderType: 'RETAIL',
+        await supabase.rpc('handle_pos_sale', {
+          shop_id: shopId,
           items: receiptItems,
-          subtotal: total,
-          discount: discountAmount,
-          tax: taxAmount,
-          total: grandTotal,
-          createdAt: new Date().toISOString(),
+          order_id: orderId,
         });
-        // try to print immediately if connected
-        await Print.printAsync({ html });
-      } catch (_) {
-        // ignore print errors
+      } catch (e) {
+        console.warn('pos_sale RPC error', e);
       }
-      setPrinting(false);
     }
+
+    // still sync queued records for redundancy
+    import('@/lib/sync').then(({ syncSalesQueue }) => syncSalesQueue());
 
     setOrderSuccess(true);
     setTimeout(() => {
@@ -206,6 +283,7 @@ export default function POSScreen() {
       setOrderSuccess(false);
     }, 1800);
   };
+
 
   return (
     <View style={[styles.root, { paddingTop: topPad }]}>
@@ -405,14 +483,14 @@ export default function POSScreen() {
               <Pressable
                 style={[
                   styles.chargeBtn,
-                  items.length === 0 && styles.chargeBtnDisabled,
+                  (items.length === 0 || !shopId) && styles.chargeBtnDisabled,
                   orderSuccess && styles.chargeBtnSuccess,
                 ]}
                 onPress={handleCharge}
-                disabled={items.length === 0 || printing}
+                disabled={items.length === 0 || !shopId}
               >
                 <Text style={styles.chargeBtnText}>
-                  {orderSuccess ? 'DONE!' : printing ? 'PRINTING...' : 'CHARGE'}
+                  {orderSuccess ? 'DONE!' : 'CHARGE'}
                 </Text>
               </Pressable>
             </View>
