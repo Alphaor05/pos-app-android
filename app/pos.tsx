@@ -10,6 +10,10 @@ import {
   Platform,
   ActivityIndicator,
   useWindowDimensions,
+  Alert,
+  RefreshControl,
+  AppState,
+  Modal,
 } from 'react-native';
 import * as Print from 'expo-print';
 import { generateReceiptHtml } from '@/lib/receiptHtml';
@@ -40,8 +44,8 @@ const C = Colors.dark;
 
 // retail-only, order types removed
 
-async function fetchProductsFromSupabase(): Promise<Product[]> {
-  console.log('fetchProductsFromSupabase called, supabase client:', supabase);
+async function fetchProductsFromSupabase(shopId: string | null): Promise<Product[]> {
+  console.log('fetchProductsFromSupabase called, shopId:', shopId, 'supabase client:', supabase);
   if (!supabase) {
     console.warn('fetchProducts: supabase client missing – using local cache');
     // no network client; fall back to local cache (mutable during development)
@@ -50,20 +54,25 @@ async function fetchProductsFromSupabase(): Promise<Product[]> {
       const local = await getProducts();
       // convert ProductRecord -> Product shape
       return local.map(p => ({
-        id: Number(p.id),
+        id: p.id,
         name: p.name,
         price: p.price,
-        category: p.category,
-        image_url: p.image_url,
+        category: p.category || '',
+        image_url: p.image_url || '',
       }));
     } catch (_e) {
       return [];
     }
   }
-  const { data, error } = await supabase
-    .from('products')
-    .select('*')
-    .order('name', { ascending: true });
+
+  // Fetch products and their shop-specific stock/price if shopId is provided
+  let query = supabase.from('products').select('*, product_shop_stock(price, in_stock, available)');
+
+  if (shopId) {
+    query = query.eq('product_shop_stock.shop_id', shopId);
+  }
+
+  const { data, error } = await query.order('name', { ascending: true });
   console.log('fetchProductsFromSupabase →', data, error);
   if (error) {
     // try local fallback on fetch error
@@ -71,21 +80,36 @@ async function fetchProductsFromSupabase(): Promise<Product[]> {
       const { getProducts } = await import('@/lib/offlineDb');
       const local = await getProducts();
       return local.map(p => ({
-        id: Number(p.id),
+        id: p.id,
         name: p.name,
         price: p.price,
-        category: p.category,
-        image_url: p.image_url,
+        category: p.category || '',
+        image_url: p.image_url || '',
       }));
     } catch (_err) {
       throw new Error(error.message);
     }
   }
-  return (data ?? []) as Product[];
+
+  const merged = (data ?? []).map((p: any) => {
+    const shopData = p.product_shop_stock && p.product_shop_stock.length > 0 ? p.product_shop_stock[0] : null;
+    return {
+      id: p.id,
+      name: p.name,
+      // Use shop-specific price if available, otherwise base price
+      price: shopData && shopData.price !== null ? Number(shopData.price) : Number(p.price),
+      category: p.category,
+      image_url: p.image_url,
+      sku: p.code || p.sku,
+      inStock: shopData ? Number(shopData.in_stock ?? 0) : 0,
+    };
+  });
+
+  return merged as Product[];
 }
 
 export default function POSScreen() {
-  const { logout } = useAuth();
+  const { logout, pin } = useAuth();
   const { items, addItem, removeItem, updateQuantity, clearCart, total } = useCart();
   const { connectedDevice, status: btStatus } = useBluetooth();
   const insets = useSafeAreaInsets();
@@ -103,16 +127,6 @@ export default function POSScreen() {
   const topPad = Platform.OS === 'web' ? 67 : insets.top;
   const botPad = Platform.OS === 'web' ? 34 : insets.bottom;
 
-  const {
-    data: products = [],
-    isLoading,
-    error: fetchError,
-    refetch,
-  } = useQuery<Product[]>({
-    queryKey: ['supabase-products'],
-    queryFn: fetchProductsFromSupabase,
-  });
-
   // shop/terminal id pulled from settings; used to guard charge & rpc calls
   const [shopId, setShopId] = useState<string | null>(null);
   useEffect(() => {
@@ -120,6 +134,53 @@ export default function POSScreen() {
       getPosId().then(id => setShopId(id));
     });
   }, []);
+
+  const { data: paymentMethods = [] } = useQuery({
+    queryKey: ['payment-methods'],
+    queryFn: async () => {
+      if (!supabase) return [];
+      const { data, error } = await supabase.from('payment_methods').select('*').eq('status', 'active');
+      if (error) throw error;
+      return data || [];
+    },
+    enabled: !!supabase,
+  });
+
+  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<string>('USD Cash');
+  const [showPaymentPicker, setShowPaymentPicker] = useState(false);
+
+  useEffect(() => {
+    if (paymentMethods.length > 0 && !paymentMethods.find(m => m.payment_type_name === selectedPaymentMethod)) {
+      setSelectedPaymentMethod(paymentMethods[0].payment_type_name);
+    }
+  }, [paymentMethods]);
+
+  const [refreshing, setRefreshing] = useState(false);
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await refetch();
+    setRefreshing(false);
+  };
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', nextAppState => {
+      if (nextAppState === 'active') {
+        refetch();
+        refreshPending();
+      }
+    });
+    return () => subscription.remove();
+  }, []);
+
+  const {
+    data: products = [],
+    isLoading,
+    error: fetchError,
+    refetch,
+  } = useQuery<Product[]>({
+    queryKey: ['supabase-products', shopId],
+    queryFn: () => fetchProductsFromSupabase(shopId),
+  });
 
 
   const categories = useMemo(() => {
@@ -142,6 +203,27 @@ export default function POSScreen() {
   const taxAmount = total * 0.05;
   const grandTotal = total - discountAmount + taxAmount;
   const itemCount = items.reduce((s, i) => s + i.quantity, 0);
+
+  // Sync products to local database whenever they are updated from Supabase
+  useEffect(() => {
+    if (products.length > 0) {
+      import('@/lib/offlineDb').then(async ({ addProduct }) => {
+        for (const p of products) {
+          try {
+            await addProduct({
+              id: p.id,
+              name: p.name,
+              price: p.price,
+              category: p.category,
+              image_url: p.image_url,
+            });
+          } catch (err) {
+            console.warn('Failed to sync product to local DB', p.id, err);
+          }
+        }
+      });
+    }
+  }, [products]);
 
   const [pendingCount, setPendingCount] = useState(0);
   const refreshPending = async () => {
@@ -177,11 +259,11 @@ export default function POSScreen() {
               createdAt: row.created_at ?? new Date().toISOString(),
             });
             await Print.printAsync({ html });
-          } catch (_) {}
+          } catch (_) { }
         }
       )
       .subscribe();
-    return () => { supabase.removeChannel(channel); };
+    return () => { if (supabase) supabase.removeChannel(channel); };
   }, []);
 
   // subscribe to product changes so the grid updates automatically
@@ -191,32 +273,38 @@ export default function POSScreen() {
       console.warn('realtime listener aborted because supabase is null');
       return;
     }
-    console.log('creating realtime subscription to products');
+    console.log('creating realtime subscription to products and shop stock');
+
     const prodChannel = supabase
       .channel('products_listener')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'products' }, async (payload) => {
-        console.log('product INSERT payload', payload);
-        queryClient.invalidateQueries(['supabase-products']);
-        try {
-          const { addProduct } = await import('@/lib/offlineDb');
-          await addProduct(payload.new as any);
-        } catch {}
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, async (payload) => {
+        console.log('product change payload', payload);
+        queryClient.invalidateQueries({ queryKey: ['supabase-products', shopId] });
+        const eventType = (payload as any).eventType;
+        if (eventType !== 'DELETE') {
+          try {
+            const { addProduct } = await import('@/lib/offlineDb');
+            // Logic for manual add if needed
+          } catch { }
+        }
       })
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'products' }, async (payload) => {
-        console.log('product UPDATE payload', payload);
-        queryClient.invalidateQueries(['supabase-products']);
-        try {
-          const { addProduct } = await import('@/lib/offlineDb');
-          await addProduct(payload.new as any);
-        } catch {}
-      })
-      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'products' }, (payload) => {
-        console.log('product DELETE payload', payload);
-        queryClient.invalidateQueries(['supabase-products']);
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'product_shop_stock',
+        filter: shopId ? `shop_id=eq.${shopId}` : undefined
+      }, async (payload) => {
+        console.log('product_shop_stock change payload', payload);
+        queryClient.invalidateQueries({ queryKey: ['supabase-products', shopId] });
       })
       .subscribe();
-    return () => { supabase.removeChannel(prodChannel); };
-  }, [queryClient]);
+
+    return () => {
+      if (supabase) {
+        supabase.removeChannel(prodChannel);
+      }
+    };
+  }, [queryClient, shopId]);
 
   const handleLogout = () => {
     if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -236,6 +324,7 @@ export default function POSScreen() {
     if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     const orderId = Date.now().toString() + Math.random().toString(36).substr(2, 6);
     const receiptItems = items.map(i => ({
+      product_id: i.product.id,
       name: i.product.name,
       quantity: i.quantity,
       price: i.product.price,
@@ -262,16 +351,21 @@ export default function POSScreen() {
     }
 
     // When online, call the dedicated RPC to deduct stock immediately
-    if (supabase) {
+    if (supabase && shopId) {
       try {
         await supabase.rpc('handle_pos_sale', {
-          shop_id: shopId,
-          items: receiptItems,
-          order_id: orderId,
+          p_shop_id: shopId,
+          p_items: receiptItems,
+          p_order_id: orderId,
+          p_total_amount: Number(grandTotal),
+          p_payment_method: selectedPaymentMethod,
+          p_pin: pin,
         });
       } catch (e) {
         console.warn('pos_sale RPC error', e);
       }
+    } else if (!shopId) {
+      console.warn('Cannot deduct stock: shopId is missing');
     }
 
     // still sync queued records for redundancy
@@ -366,6 +460,14 @@ export default function POSScreen() {
               columnWrapperStyle={styles.gridRow}
               contentContainerStyle={[styles.gridContent, { paddingBottom: 60 + botPad }]}
               showsVerticalScrollIndicator={false}
+              refreshControl={
+                <RefreshControl
+                  refreshing={refreshing}
+                  onRefresh={onRefresh}
+                  tintColor={C.accent}
+                  colors={[C.accent]}
+                />
+              }
               renderItem={({ item }) => (
                 <ProductCard product={item} onPress={addItem} />
               )}
@@ -477,9 +579,59 @@ export default function POSScreen() {
             )}
 
             <View style={styles.actionBtns}>
-              <Pressable style={styles.saveBtn} disabled={items.length === 0}>
-                <Text style={styles.saveBtnText}>SAVE</Text>
+              <Pressable
+                style={styles.paymentSelector}
+                onPress={() => setShowPaymentPicker(true)}
+              >
+                <View style={styles.paymentSelectorLeft}>
+                  <Text style={styles.paymentSelectorLabel}>PAYMENT</Text>
+                  <Text style={styles.paymentSelectorValue}>{selectedPaymentMethod}</Text>
+                </View>
+                <MaterialIcons name="arrow-drop-down" size={20} color={C.textSecondary} />
               </Pressable>
+
+              <Modal
+                visible={showPaymentPicker}
+                transparent={true}
+                animationType="fade"
+                onRequestClose={() => setShowPaymentPicker(false)}
+              >
+                <Pressable
+                  style={styles.modalOverlay}
+                  onPress={() => setShowPaymentPicker(false)}
+                >
+                  <View style={styles.pickerModal}>
+                    <Text style={styles.pickerTitle}>Select Payment Method</Text>
+                    <FlatList
+                      data={paymentMethods}
+                      keyExtractor={(item) => item.id}
+                      renderItem={({ item }) => (
+                        <Pressable
+                          style={[
+                            styles.pickerOption,
+                            selectedPaymentMethod === item.payment_type_name && styles.pickerOptionSelected
+                          ]}
+                          onPress={() => {
+                            setSelectedPaymentMethod(item.payment_type_name);
+                            setShowPaymentPicker(false);
+                          }}
+                        >
+                          <Text style={[
+                            styles.pickerOptionText,
+                            selectedPaymentMethod === item.payment_type_name && styles.pickerOptionTextSelected
+                          ]}>
+                            {item.payment_type_name}
+                          </Text>
+                          {selectedPaymentMethod === item.payment_type_name && (
+                            <Ionicons name="checkmark-circle" size={18} color={C.accent} />
+                          )}
+                        </Pressable>
+                      )}
+                    />
+                  </View>
+                </Pressable>
+              </Modal>
+
               <Pressable
                 style={[
                   styles.chargeBtn,
@@ -570,6 +722,11 @@ function ProductCard({ product, onPress }: { product: Product; onPress: (p: Prod
           contentFit="cover"
           transition={200}
         />
+        {(product.inStock ?? 0) < 10 && (
+          <View style={styles.lowStockOverlay}>
+            <Text style={styles.lowStockText}>LOW STOCK ({product.inStock})</Text>
+          </View>
+        )}
         <View style={styles.productInfo}>
           {!!product.category && (
             <Text style={styles.productCategory} numberOfLines={1}>{product.category}</Text>
@@ -820,6 +977,24 @@ const styles = StyleSheet.create({
     width: '100%',
     aspectRatio: 1.1,
     backgroundColor: C.surface,
+  },
+  lowStockOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    height: '100%',
+    aspectRatio: 1.1,
+    backgroundColor: 'rgba(255, 0, 0, 0.25)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  lowStockText: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 10,
+    color: '#fff',
+    backgroundColor: 'rgba(255, 0, 0, 0.6)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    transform: [{ rotate: '-10deg' }],
   },
   productInfo: {
     padding: 8,
@@ -1184,5 +1359,74 @@ const styles = StyleSheet.create({
     fontFamily: 'Inter_500Medium',
     fontSize: 10,
     color: C.warning,
+  },
+  paymentSelector: {
+    flex: 1,
+    backgroundColor: C.card,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderWidth: 1,
+    borderColor: C.border,
+  },
+  paymentSelectorLeft: {
+    gap: 1,
+  },
+  paymentSelectorLabel: {
+    fontFamily: 'Inter_500Medium',
+    fontSize: 10,
+    color: C.textMuted,
+    textTransform: 'uppercase',
+  },
+  paymentSelectorValue: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 13,
+    color: C.textSecondary,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  pickerModal: {
+    width: '80%',
+    maxWidth: 350,
+    backgroundColor: C.surface,
+    borderRadius: 16,
+    padding: 16,
+    maxHeight: '60%',
+    borderWidth: 1,
+    borderColor: C.border,
+  },
+  pickerTitle: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 16,
+    color: C.text,
+    marginBottom: 16,
+    textAlign: 'center',
+  },
+  pickerOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    marginBottom: 4,
+  },
+  pickerOptionSelected: {
+    backgroundColor: C.accentDim,
+  },
+  pickerOptionText: {
+    fontFamily: 'Inter_500Medium',
+    fontSize: 15,
+    color: C.textSecondary,
+  },
+  pickerOptionTextSelected: {
+    color: C.accentLight,
   },
 });

@@ -9,6 +9,7 @@ import {
   TextInput,
   Alert,
   Linking,
+  RefreshControl,
 } from 'react-native';
 import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -27,15 +28,23 @@ export default function SettingsScreen() {
 
   const [posId, setPosId] = useState<string>('');
   const [posSaved, setPosSaved] = useState(false);
-  const [shops, setShops] = useState<Array<{id:string;name:string}>>([]);
+  const [shops, setShops] = useState<Array<{ id: string; name: string }>>([]);
+
+  const [refreshing, setRefreshing] = useState(false);
+  const refresh = async () => {
+    setRefreshing(true);
+    const { listShops } = await import('@/lib/settings');
+    const list = await listShops();
+    setShops(list);
+    setRefreshing(false);
+  };
 
   useEffect(() => {
     (async () => {
-      const { getPosId, listShops } = await import('@/lib/settings');
+      const { getPosId } = await import('@/lib/settings');
       const id = await getPosId();
       if (id) setPosId(id);
-      const list = await listShops();
-      setShops(list);
+      refresh();
     })();
   }, []);
 
@@ -67,6 +76,14 @@ export default function SettingsScreen() {
       <ScrollView
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={refresh}
+            tintColor={C.accent}
+            colors={[C.accent]}
+          />
+        }
       >
         <View style={styles.section}>
           <View style={styles.sectionHeader}>

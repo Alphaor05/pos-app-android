@@ -5,6 +5,7 @@ export interface Product {
   category: string;
   image_url: string;
   sku?: string;
+  inStock?: number;
 }
 
 export const FALLBACK_PRODUCTS: Product[] = [

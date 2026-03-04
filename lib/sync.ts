@@ -26,15 +26,15 @@ export async function syncSalesQueue() {
     for (const rec of pending) {
       try {
         if (!supabase) throw new Error('Supabase not configured');
-        // insert receipt row (same structure used by handleCharge)
-        await supabase.from('transaction_receipts').insert(rec.data);
         if (posId) {
           // call POS sale RPC; backend will subtract inventory for the
           // specified shop_id.  we pass order identifier too for logging.
           await supabase.rpc('handle_pos_sale', {
-            shop_id: posId,
-            items: rec.data.items,
-            order_id: rec.data.orderId || rec.data.order_id,
+            p_shop_id: posId,
+            p_items: rec.data.items,
+            p_order_id: rec.data.orderId || rec.data.order_id,
+            p_total_amount: rec.data.total || rec.data.amount || 0,
+            p_payment_method: rec.data.payment_method || 'Cash',
           });
         } else {
           console.warn('syncSalesQueue: no shop_id, skipping handle_pos_sale');

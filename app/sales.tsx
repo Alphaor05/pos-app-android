@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, FlatList, Pressable, Platform } from 'react-native';
+import { View, Text, StyleSheet, FlatList, Pressable, Platform, RefreshControl } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
@@ -15,10 +15,18 @@ export default function SalesScreen() {
   const botPad = Platform.OS === 'web' ? 34 : insets.bottom;
 
   const [sales, setSales] = useState<SaleRecord[]>([]);
+  const [refreshing, setRefreshing] = useState(false);
 
   const load = async () => {
     const list = await getAllSales();
     setSales(list);
+  };
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await syncSalesQueue();
+    await load();
+    setRefreshing(false);
   };
 
   useEffect(() => {
@@ -41,7 +49,7 @@ export default function SalesScreen() {
   };
 
   return (
-    <View style={[styles.root, { paddingTop: topPad, paddingBottom: botPad }]}>      
+    <View style={[styles.root, { paddingTop: topPad, paddingBottom: botPad }]}>
       <View style={styles.header}>
         <Pressable onPress={() => router.back()} style={styles.backBtn}>
           <Ionicons name="arrow-back" size={22} color={C.text} />
@@ -56,6 +64,14 @@ export default function SalesScreen() {
         data={sales}
         keyExtractor={s => s.id}
         contentContainerStyle={styles.list}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={C.accent}
+            colors={[C.accent]}
+          />
+        }
         renderItem={renderItem}
         ListEmptyComponent={<Text style={styles.empty}>No local sales</Text>}
       />
