@@ -59,17 +59,11 @@ function PinDot({ filled, index }: { filled: boolean; index: number }) {
 }
 
 export default function LoginScreen() {
-  const { login, isAuthenticated } = useAuth();
+  const { login } = useAuth();
   const insets = useSafeAreaInsets();
   const [pin, setPin] = useState('');
   const [error, setError] = useState(false);
   const shakeX = useSharedValue(0);
-
-  useEffect(() => {
-    if (isAuthenticated) {
-      router.replace('/pos');
-    }
-  }, [isAuthenticated]);
 
   const shake = () => {
     shakeX.value = withSequence(

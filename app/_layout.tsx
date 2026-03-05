@@ -22,7 +22,31 @@ import { initSync } from '@/lib/sync';
 
 SplashScreen.preventAutoHideAsync();
 
+import { useAuth } from "@/context/AuthContext";
+import { router, useSegments } from "expo-router";
+
 function RootLayoutNav() {
+  const { isAuthenticated, isLoading } = useAuth();
+  const segments = useSegments();
+
+  useEffect(() => {
+    if (isLoading) return;
+
+    // Type-cast segments to string[] to avoid strict route-type overlap errors
+    const segs = segments as string[];
+    const isLoginPage = segs.length === 0;
+
+    if (!isAuthenticated && !isLoginPage) {
+      // Redirect to login if not authenticated and trying to access private route
+      router.replace('/');
+    } else if (isAuthenticated && isLoginPage) {
+      // Redirect to pos if authenticated and on login page
+      router.replace('/pos');
+    }
+  }, [isAuthenticated, isLoading, segments]);
+
+  if (isLoading) return null; // Or a splash screen component
+
   return (
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Screen name="index" />

@@ -14,6 +14,7 @@ export interface EmployeeSession {
 
 interface AuthContextValue {
   isAuthenticated: boolean;
+  isLoading: boolean;
   employee: EmployeeSession | null;
   login: (enteredPin: string) => Promise<boolean>;
   logout: () => void;
@@ -23,6 +24,7 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const [employee, setEmployee] = useState<EmployeeSession | null>(null);
 
   // Restore session from AsyncStorage on mount
@@ -32,11 +34,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         try {
           const session: EmployeeSession = JSON.parse(stored);
           setEmployee(session);
-          setIsAuthenticated(true);
+          // isAuthenticated stays false until login() is successfully called
         } catch {
           // corrupt storage – ignore
         }
       }
+      setIsLoading(false);
     });
   }, []);
 
@@ -90,10 +93,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo(() => ({
     isAuthenticated,
+    isLoading,
     employee,
     login,
     logout,
-  }), [isAuthenticated, employee]);
+  }), [isAuthenticated, isLoading, employee]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
