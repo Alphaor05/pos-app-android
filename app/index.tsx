@@ -157,7 +157,6 @@ export default function LoginScreen() {
         ))}
       </View>
 
-      <Text style={styles.hint}>Default PIN: 1234</Text>
     </View>
   );
 }

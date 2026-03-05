@@ -1,53 +1,99 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { supabase } from '@/lib/supabase';
 
-const CORRECT_PIN = '1234';
-const PIN_KEY = 'pos_pin';
+const SESSION_KEY = 'pos_employee_session';
+
+export interface EmployeeSession {
+  employee_id: string;
+  first_name: string | null;
+  last_name: string | null;
+  role: string | null;
+  shop: string | null;
+}
 
 interface AuthContextValue {
   isAuthenticated: boolean;
-  pin: string;
+  employee: EmployeeSession | null;
   login: (enteredPin: string) => Promise<boolean>;
   logout: () => void;
-  changePin: (newPin: string) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [pin, setPin] = useState(CORRECT_PIN);
+  const [employee, setEmployee] = useState<EmployeeSession | null>(null);
 
+  // Restore session from AsyncStorage on mount
   useEffect(() => {
-    AsyncStorage.getItem(PIN_KEY).then((stored) => {
-      if (stored) setPin(stored);
+    AsyncStorage.getItem(SESSION_KEY).then((stored) => {
+      if (stored) {
+        try {
+          const session: EmployeeSession = JSON.parse(stored);
+          setEmployee(session);
+          setIsAuthenticated(true);
+        } catch {
+          // corrupt storage – ignore
+        }
+      }
     });
   }, []);
 
   const login = async (enteredPin: string): Promise<boolean> => {
-    if (enteredPin === pin) {
+    if (!supabase) {
+      console.warn('[Auth] Supabase client not available');
+      return false;
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from('employees')
+        .select('employee_id, first_name, last_name, role, shop, status')
+        .eq('pin', enteredPin)
+        .eq('status', 'active')
+        .maybeSingle();
+
+      if (error) {
+        console.error('[Auth] Supabase error:', error.message);
+        return false;
+      }
+
+      if (!data) {
+        // No matching active employee found for this PIN
+        return false;
+      }
+
+      const session: EmployeeSession = {
+        employee_id: data.employee_id,
+        first_name: data.first_name,
+        last_name: data.last_name,
+        role: data.role,
+        shop: data.shop,
+      };
+
+      await AsyncStorage.setItem(SESSION_KEY, JSON.stringify(session));
+      setEmployee(session);
       setIsAuthenticated(true);
       return true;
+    } catch (err) {
+      console.error('[Auth] Unexpected error during login:', err);
+      return false;
     }
-    return false;
   };
 
-  const logout = () => {
+  const logout = async () => {
+    await AsyncStorage.removeItem(SESSION_KEY);
+    setEmployee(null);
     setIsAuthenticated(false);
-  };
-
-  const changePin = async (newPin: string) => {
-    await AsyncStorage.setItem(PIN_KEY, newPin);
-    setPin(newPin);
   };
 
   const value = useMemo(() => ({
     isAuthenticated,
-    pin,
+    employee,
     login,
     logout,
-    changePin,
-  }), [isAuthenticated, pin]);
+  }), [isAuthenticated, employee]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

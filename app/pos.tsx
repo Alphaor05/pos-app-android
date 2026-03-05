@@ -109,7 +109,7 @@ async function fetchProductsFromSupabase(shopId: string | null): Promise<Product
 }
 
 export default function POSScreen() {
-  const { logout, pin } = useAuth();
+  const { logout, employee } = useAuth();
   const { items, addItem, removeItem, updateQuantity, clearCart, total } = useCart();
   const { connectedDevice, status: btStatus } = useBluetooth();
   const insets = useSafeAreaInsets();
@@ -148,6 +148,7 @@ export default function POSScreen() {
 
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<string>('USD Cash');
   const [showPaymentPicker, setShowPaymentPicker] = useState(false);
+  const [customerName, setCustomerName] = useState('');
 
   useEffect(() => {
     if (paymentMethods.length > 0 && !paymentMethods.find(m => m.payment_type_name === selectedPaymentMethod)) {
@@ -200,8 +201,8 @@ export default function POSScreen() {
   }, [products, search, selectedCategory]);
 
   const discountAmount = parseFloat(discount) || 0;
-  const taxAmount = total * 0.05;
-  const grandTotal = total - discountAmount + taxAmount;
+  const taxAmount = 0; // tax removed — total equals raw item subtotal minus discount
+  const grandTotal = total - discountAmount;
   const itemCount = items.reduce((s, i) => s + i.quantity, 0);
 
   // Sync products to local database whenever they are updated from Supabase
@@ -321,6 +322,14 @@ export default function POSScreen() {
       return;
     }
 
+    // block sale if any cart item is out of stock
+    const outOfStock = items.filter(i => (i.product.inStock ?? 0) <= 0);
+    if (outOfStock.length > 0) {
+      const names = outOfStock.map(i => i.product.name).join(', ');
+      Alert.alert('Out of Stock', `Cannot complete sale — the following item(s) have no stock: ${names}`);
+      return;
+    }
+
     if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     const orderId = Date.now().toString() + Math.random().toString(36).substr(2, 6);
     const receiptItems = items.map(i => ({
@@ -335,10 +344,11 @@ export default function POSScreen() {
       items: receiptItems,
       subtotal: total,
       discount: discountAmount,
-      tax: taxAmount,
+      tax: 0,
       total: grandTotal,
       createdAt: new Date().toISOString(),
       shopId,
+      customerName: customerName.trim() || null,
     };
 
     // Always queue the sale locally for offline support
@@ -359,7 +369,8 @@ export default function POSScreen() {
           p_order_id: orderId,
           p_total_amount: Number(grandTotal),
           p_payment_method: selectedPaymentMethod,
-          p_pin: pin,
+          p_employee_id: employee?.employee_id ?? null,
+          p_customer_name: customerName.trim() || null,
         });
       } catch (e) {
         console.warn('pos_sale RPC error', e);
@@ -374,6 +385,7 @@ export default function POSScreen() {
     setOrderSuccess(true);
     setTimeout(() => {
       clearCart();
+      setCustomerName('');
       setOrderSuccess(false);
     }, 1800);
   };
@@ -499,14 +511,6 @@ export default function POSScreen() {
         </View>
 
         <View style={[styles.cartPanel, { paddingBottom: botPad }]}>
-          <View style={styles.cartTopActions}>
-            <Pressable style={styles.cartActionBtn}>
-              <Ionicons name="person-outline" size={18} color={C.textSecondary} />
-            </Pressable>
-            <Pressable style={styles.cartActionBtn}>
-              <Ionicons name="notifications-outline" size={18} color={C.textSecondary} />
-            </Pressable>
-          </View>
 
 
           {items.length === 0 ? (
@@ -527,6 +531,22 @@ export default function POSScreen() {
           )}
 
           <View style={styles.cartFooter}>
+            <View style={styles.customerInputRow}>
+              <Ionicons name="person-outline" size={16} color={C.textSecondary} />
+              <TextInput
+                style={styles.customerInput}
+                placeholder="Review Customer Name..."
+                placeholderTextColor={C.textMuted}
+                value={customerName}
+                onChangeText={setCustomerName}
+              />
+              {customerName.length > 0 && (
+                <Pressable onPress={() => setCustomerName('')}>
+                  <Feather name="x" size={14} color={C.textSecondary} />
+                </Pressable>
+              )}
+            </View>
+
             {items.length > 0 && (
               <Pressable style={styles.clearRow} onPress={clearCart}>
                 <Feather name="trash-2" size={13} color={C.danger} />
@@ -551,7 +571,7 @@ export default function POSScreen() {
                   selectTextOnFocus
                 />
               </View>
-              <TotalRow label="Tax and charges (USD)" value={taxAmount.toFixed(2)} />
+
               <View style={styles.totalsLine} />
               <View style={styles.grandTotalRow}>
                 <Text style={styles.grandTotalLabel}>Total (USD)</Text>
@@ -698,22 +718,25 @@ function CategoryTab({ label, selected, onPress }: { label: string; selected: bo
 }
 
 function ProductCard({ product, onPress }: { product: Product; onPress: (p: Product) => void }) {
+  const isOutOfStock = (product.inStock ?? 0) <= 0;
   const scale = useSharedValue(1);
   const animStyle = useAnimatedStyle(() => ({
     transform: [{ scale: scale.value }],
   }));
 
   const handlePress = () => {
+    if (isOutOfStock) return;
     if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     onPress(product);
   };
 
   return (
     <Pressable
-      onPressIn={() => { scale.value = withSpring(0.95, { damping: 10 }); }}
+      onPressIn={() => { if (!isOutOfStock) scale.value = withSpring(0.95, { damping: 10 }); }}
       onPressOut={() => { scale.value = withSpring(1, { damping: 10 }); }}
       onPress={handlePress}
-      style={styles.productCardWrap}
+      style={[styles.productCardWrap, isOutOfStock && { opacity: 0.6 }]}
+      disabled={isOutOfStock}
     >
       <Animated.View style={[styles.productCard, animStyle]}>
         <Image
@@ -722,7 +745,11 @@ function ProductCard({ product, onPress }: { product: Product; onPress: (p: Prod
           contentFit="cover"
           transition={200}
         />
-        {(product.inStock ?? 0) < 10 && (
+        {isOutOfStock ? (
+          <View style={styles.outOfStockOverlay}>
+            <Text style={styles.outOfStockText}>OUT OF STOCK</Text>
+          </View>
+        ) : (product.inStock ?? 0) < 10 && (
           <View style={styles.lowStockOverlay}>
             <Text style={styles.lowStockText}>LOW STOCK ({product.inStock})</Text>
           </View>
@@ -736,7 +763,11 @@ function ProductCard({ product, onPress }: { product: Product; onPress: (p: Prod
             <Text style={styles.productPrice}>
               USD {typeof product.price === 'number' ? product.price.toFixed(2) : product.price}
             </Text>
-            <Pressable style={styles.addBtn} onPress={handlePress}>
+            <Pressable
+              style={[styles.addBtn, isOutOfStock && styles.addBtnDisabled]}
+              onPress={handlePress}
+              disabled={isOutOfStock}
+            >
               <Feather name="plus" size={13} color="#fff" />
             </Pressable>
           </View>
@@ -996,6 +1027,25 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     transform: [{ rotate: '-10deg' }],
   },
+  outOfStockOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    height: '100%',
+    aspectRatio: 1.1,
+    backgroundColor: 'rgba(0, 0, 0, 0.55)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  outOfStockText: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 10,
+    color: '#fff',
+    backgroundColor: 'rgba(80, 80, 80, 0.85)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    transform: [{ rotate: '-10deg' }],
+    letterSpacing: 0.5,
+  },
   productInfo: {
     padding: 8,
     gap: 2,
@@ -1031,6 +1081,10 @@ const styles = StyleSheet.create({
     backgroundColor: C.accent,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  addBtnDisabled: {
+    backgroundColor: C.textMuted,
+    opacity: 0.5,
   },
   emptyState: {
     alignItems: 'center',
@@ -1334,6 +1388,30 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#fff',
   },
+  pendingBadgeText: {
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 10,
+    color: '#fff',
+  },
+  customerInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: C.surface,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: C.border,
+    gap: 8,
+  },
+  customerInput: {
+    flex: 1,
+    fontFamily: 'Inter_500Medium',
+    fontSize: 14,
+    color: C.text,
+    padding: 0,
+  },
   voidBtn: {
     marginTop: 4,
     backgroundColor: C.dangerDim,
@@ -1354,11 +1432,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 8,
-  },
-  pendingBadgeText: {
-    fontFamily: 'Inter_500Medium',
-    fontSize: 10,
-    color: C.warning,
   },
   paymentSelector: {
     flex: 1,

@@ -63,6 +63,9 @@ export default function SettingsScreen() {
     setTimeout(() => setPosSaved(false), 2500);
   };
 
+  const { employee } = useAuth();
+  const isAdmin = employee?.role?.toLowerCase() === 'admin';
+
   return (
     <View style={[styles.root, { paddingTop: topPad, paddingBottom: botPad }]}>
       <View style={styles.header}>
@@ -85,45 +88,47 @@ export default function SettingsScreen() {
           />
         }
       >
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <MaterialCommunityIcons name="storefront-outline" size={18} color={C.accent} />
-            <Text style={styles.sectionTitle}>Terminal / Shop</Text>
-          </View>
-          <Text style={styles.settingLabel}>Select or enter POS ID</Text>
-          {shops.length > 0 && (
-            <View style={{ marginBottom: 10 }}>
-              {shops.map(s => (
-                <Pressable
-                  key={s.id}
-                  style={[
-                    styles.shopRow,
-                    posId === s.id && styles.shopRowSelected,
-                  ]}
-                  onPress={() => handleSavePos(s.id)}
-                >
-                  <Text style={styles.shopRowText}>{s.name} ({s.id})</Text>
-                </Pressable>
-              ))}
+        {isAdmin && (
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <MaterialCommunityIcons name="storefront-outline" size={18} color={C.accent} />
+              <Text style={styles.sectionTitle}>Terminal / Shop</Text>
             </View>
-          )}
-          <View style={styles.manualEntryRow}>
-            <TextInput
-              style={[styles.manualEntryInput, { flex: 1 }]}
-              value={posId}
-              onChangeText={setPosId}
-              placeholder="e.g. POS-01"
-              placeholderTextColor={C.textMuted}
-            />
-            <Pressable
-              onPress={() => handleSavePos()}
-              style={[styles.manualSaveBtn, !posId && styles.manualSaveBtnDisabled]}
-              disabled={!posId.trim() && !posSaved}
-            >
-              <Text style={styles.manualSaveBtnText}>{posSaved ? 'Saved!' : 'Set'}</Text>
-            </Pressable>
+            <Text style={styles.settingLabel}>Select or enter POS ID</Text>
+            {shops.length > 0 && (
+              <View style={{ marginBottom: 10 }}>
+                {shops.map(s => (
+                  <Pressable
+                    key={s.id}
+                    style={[
+                      styles.shopRow,
+                      posId === s.id && styles.shopRowSelected,
+                    ]}
+                    onPress={() => handleSavePos(s.id)}
+                  >
+                    <Text style={styles.shopRowText}>{s.name} ({s.id})</Text>
+                  </Pressable>
+                ))}
+              </View>
+            )}
+            <View style={styles.manualEntryRow}>
+              <TextInput
+                style={[styles.manualEntryInput, { flex: 1 }]}
+                value={posId}
+                onChangeText={setPosId}
+                placeholder="e.g. POS-01"
+                placeholderTextColor={C.textMuted}
+              />
+              <Pressable
+                onPress={() => handleSavePos()}
+                style={[styles.manualSaveBtn, !posId && styles.manualSaveBtnDisabled]}
+                disabled={!posId.trim() && !posSaved}
+              >
+                <Text style={styles.manualSaveBtnText}>{posSaved ? 'Saved!' : 'Set'}</Text>
+              </Pressable>
+            </View>
           </View>
-        </View>
+        )}
         <BluetoothSection />
         <PinSection />
         <AboutSection />
@@ -267,105 +272,23 @@ function BluetoothSection() {
 }
 
 function PinSection() {
-  const { pin, changePin } = useAuth();
-  const [currentPin, setCurrentPin] = useState('');
-  const [newPin, setNewPin] = useState('');
-  const [confirmPin, setConfirmPin] = useState('');
-  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
-
-  const handleChangePin = async () => {
-    if (currentPin !== pin) {
-      setMessage({ type: 'error', text: 'Current PIN is incorrect' });
-      return;
-    }
-    if (newPin.length !== 4 || !/^\d{4}$/.test(newPin)) {
-      setMessage({ type: 'error', text: 'New PIN must be 4 digits' });
-      return;
-    }
-    if (newPin !== confirmPin) {
-      setMessage({ type: 'error', text: 'PINs do not match' });
-      return;
-    }
-    await changePin(newPin);
-    setCurrentPin('');
-    setNewPin('');
-    setConfirmPin('');
-    setMessage({ type: 'success', text: 'PIN changed successfully' });
-    if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    setTimeout(() => setMessage(null), 3000);
-  };
-
   return (
     <View style={styles.section}>
       <View style={styles.sectionHeader}>
         <MaterialCommunityIcons name="lock-outline" size={18} color={C.accent} />
-        <Text style={styles.sectionTitle}>Change PIN</Text>
+        <Text style={styles.sectionTitle}>Access PIN</Text>
       </View>
-
-      <View style={styles.pinForm}>
-        <PinInput
-          label="Current PIN"
-          value={currentPin}
-          onChangeText={setCurrentPin}
-        />
-        <PinInput
-          label="New PIN"
-          value={newPin}
-          onChangeText={setNewPin}
-        />
-        <PinInput
-          label="Confirm New PIN"
-          value={confirmPin}
-          onChangeText={setConfirmPin}
-        />
-
-        {message && (
-          <Text style={[
-            styles.formMessage,
-            message.type === 'success' ? styles.formMessageSuccess : styles.formMessageError,
-          ]}>
-            {message.text}
-          </Text>
-        )}
-
-        <Pressable
-          onPress={handleChangePin}
-          style={styles.changePinBtn}
-        >
-          <Text style={styles.changePinBtnText}>Update PIN</Text>
-        </Pressable>
+      <View style={styles.pinInfoCard}>
+        <MaterialCommunityIcons name="shield-key-outline" size={32} color={C.accent} style={{ marginBottom: 8 }} />
+        <Text style={styles.pinInfoTitle}>Managed via Web Admin</Text>
+        <Text style={styles.pinInfoText}>
+          Employee PINs are assigned in the web administration panel. Contact your manager to update your PIN.
+        </Text>
       </View>
     </View>
   );
 }
 
-function PinInput({
-  label,
-  value,
-  onChangeText,
-}: {
-  label: string;
-  value: string;
-  onChangeText: (v: string) => void;
-}) {
-  return (
-    <View style={styles.pinInputWrap}>
-      <Text style={styles.pinInputLabel}>{label}</Text>
-      <TextInput
-        style={styles.pinInputField}
-        value={value}
-        onChangeText={v => {
-          if (/^\d{0,4}$/.test(v)) onChangeText(v);
-        }}
-        keyboardType="numeric"
-        maxLength={4}
-        secureTextEntry
-        placeholderTextColor={C.textMuted}
-        placeholder="••••"
-      />
-    </View>
-  );
-}
 
 function AboutSection() {
   return (
@@ -662,61 +585,27 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: C.success,
   },
-  pinForm: {
+  pinInfoCard: {
     backgroundColor: C.card,
     borderRadius: 14,
-    padding: 16,
-    gap: 12,
     borderWidth: 1,
     borderColor: C.border,
-  },
-  pinInputWrap: {
+    padding: 20,
+    alignItems: 'center',
     gap: 6,
   },
-  pinInputLabel: {
-    fontFamily: 'Inter_500Medium',
+  pinInfoTitle: {
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 15,
+    color: C.text,
+    marginBottom: 4,
+  },
+  pinInfoText: {
+    fontFamily: 'Inter_400Regular',
     fontSize: 13,
     color: C.textSecondary,
-  },
-  pinInputField: {
-    backgroundColor: C.surface,
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontFamily: 'Inter_500Medium',
-    fontSize: 16,
-    color: C.text,
-    borderWidth: 1,
-    borderColor: C.border,
-    letterSpacing: 6,
-  },
-  formMessage: {
-    fontFamily: 'Inter_500Medium',
-    fontSize: 13,
     textAlign: 'center',
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-  },
-  formMessageSuccess: {
-    backgroundColor: C.successDim,
-    color: C.success,
-  },
-  formMessageError: {
-    backgroundColor: C.dangerDim,
-    color: C.danger,
-  },
-  changePinBtn: {
-    backgroundColor: C.accent,
-    borderRadius: 12,
-    paddingVertical: 14,
-    alignItems: 'center',
-    marginTop: 4,
-  },
-  changePinBtnText: {
-    fontFamily: 'Inter_700Bold',
-    fontSize: 15,
-    color: '#fff',
+    lineHeight: 20,
   },
   aboutCard: {
     backgroundColor: C.card,
