@@ -1,5 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { centerText, dashedLine, formatRow2, formatRow3 } from '@/lib/escPosUtils';
+import { printerService } from '@/lib/printerService';
 
 const STORAGE_KEY = 'pos_bluetooth_printer';
 
@@ -12,6 +14,23 @@ export interface BluetoothDevice {
 
 type ConnectionStatus = 'disconnected' | 'scanning' | 'connecting' | 'connected';
 
+export interface ReceiptData {
+  orderId: string;
+  items: { name: string; quantity: number; price: number }[];
+  subtotal: number;
+  discount: number;
+  tax: number;
+  total: number;
+  createdAt: string;
+  settings?: {
+    businessName?: string;
+    address?: string;
+    contactTel?: string;
+    footerMessage?: string;
+    receiptSize?: string;
+  };
+}
+
 interface BluetoothContextValue {
   connectedDevice: BluetoothDevice | null;
   status: ConnectionStatus;
@@ -20,7 +39,7 @@ interface BluetoothContextValue {
   stopScan: () => void;
   connect: (device: BluetoothDevice) => Promise<void>;
   disconnect: () => void;
-  printReceipt: (items: { name: string; qty: number; price: number }[], total: number) => Promise<boolean>;
+  printReceipt: (data: ReceiptData) => Promise<boolean>;
 }
 
 const BluetoothContext = createContext<BluetoothContextValue | null>(null);
@@ -68,10 +87,19 @@ export function BluetoothProvider({ children }: { children: ReactNode }) {
 
   const connect = async (device: BluetoothDevice) => {
     setStatus('connecting');
-    await new Promise(r => setTimeout(r, 1500));
-    setConnectedDevice(device);
-    setStatus('connected');
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(device));
+    try {
+      // In a real environment, you would instantiate and connect here:
+      // const printer = new Printer({ target: `BT:${device.address}`, deviceName: device.name });
+      // await printer.connect();
+
+      await new Promise(r => setTimeout(r, 1500));
+      setConnectedDevice(device);
+      setStatus('connected');
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(device));
+    } catch (error) {
+      console.warn('Connection failed', error);
+      setStatus('disconnected');
+    }
   };
 
   const disconnect = async () => {
@@ -80,10 +108,13 @@ export function BluetoothProvider({ children }: { children: ReactNode }) {
     await AsyncStorage.removeItem(STORAGE_KEY);
   };
 
-  const printReceipt = async (items: { name: string; qty: number; price: number }[], total: number): Promise<boolean> => {
-    if (status !== 'connected') return false;
-    await new Promise(r => setTimeout(r, 800));
-    return true;
+  const printReceipt = async (data: ReceiptData): Promise<boolean> => {
+    if (status !== 'connected' || !connectedDevice) return false;
+
+    return printerService.printReceipt({
+      address: connectedDevice.address,
+      name: connectedDevice.name
+    }, data);
   };
 
   const value = useMemo(() => ({

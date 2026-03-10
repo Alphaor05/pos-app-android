@@ -1,6 +1,6 @@
 import NetInfo from '@react-native-community/netinfo';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { getPendingSales, markSaleSynced } from './offlineDb';
+import { getPendingSales, markSaleSynced, getPendingActivityLogs, markActivityLogSynced } from './offlineDb';
 import { supabase } from './supabase';
 import { getPosId } from './settings';
 
@@ -13,9 +13,11 @@ export function initSync() {
   NetInfo.addEventListener((state: any) => {
     if (state.isConnected) {
       syncSalesQueue();
+      syncActivityLogsQueue();
     }
   });
   syncSalesQueue();
+  syncActivityLogsQueue();
 }
 
 export async function syncSalesQueue() {
@@ -65,5 +67,42 @@ export async function syncSalesQueue() {
     console.warn('sync queue failed', e);
   } finally {
     syncing = false;
+  }
+}
+
+let activitySyncing = false;
+
+export async function syncActivityLogsQueue() {
+  if (activitySyncing) return;
+  activitySyncing = true;
+  try {
+    const pending = await getPendingActivityLogs();
+    if (pending.length === 0) return;
+
+    console.log('syncActivityLogsQueue: pending', pending.length);
+    for (const rec of pending) {
+      try {
+        if (!supabase) throw new Error('Supabase not configured');
+
+        const { error } = await supabase
+          .from('activity_logs')
+          .insert({
+            employee_id: rec.data.employee_id,
+            action_type: rec.data.action_type,
+            amount: rec.data.amount,
+            discount: rec.data.discount,
+            created_at: rec.data.created_at || rec.created_at
+          });
+
+        if (error) throw error;
+        await markActivityLogSynced(rec.id);
+      } catch (err) {
+        console.warn('Failed to sync activity log', rec.id, err);
+      }
+    }
+  } catch (e) {
+    console.warn('sync activity queue failed', e);
+  } finally {
+    activitySyncing = false;
   }
 }

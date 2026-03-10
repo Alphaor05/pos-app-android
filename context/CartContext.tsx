@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useMemo, ReactNode } from 'react';
+import { Alert } from 'react-native';
 import { Product } from '@/data/products';
 
 export interface CartItem {
@@ -25,12 +26,22 @@ export function CartProvider({ children }: { children: ReactNode }) {
     setItems(prev => {
       const existing = prev.find(i => String(i.product.id) === String(product.id));
       if (existing) {
+        if (existing.quantity >= (product.inStock ?? 0)) {
+          Alert.alert('Out of Stock', `Cannot add more ${product.name}. Only ${product.inStock} items are in stock.`);
+          return prev;
+        }
         return prev.map(i =>
           String(i.product.id) === String(product.id)
             ? { ...i, quantity: i.quantity + 1 }
             : i
         );
       }
+
+      if ((product.inStock ?? 0) <= 0) {
+        Alert.alert('Out of Stock', `${product.name} is currently out of stock.`);
+        return prev;
+      }
+
       return [...prev, { product, quantity: 1 }];
     });
   };
@@ -44,8 +55,18 @@ export function CartProvider({ children }: { children: ReactNode }) {
       removeItem(productId);
       return;
     }
+
     setItems(prev =>
-      prev.map(i => String(i.product.id) === productId ? { ...i, quantity } : i)
+      prev.map(i => {
+        if (String(i.product.id) === productId) {
+          if (quantity > (i.product.inStock ?? 0)) {
+            Alert.alert('Out of Stock', `Cannot increase quantity. Only ${i.product.inStock} items are in stock.`);
+            return i;
+          }
+          return { ...i, quantity };
+        }
+        return i;
+      })
     );
   };
 

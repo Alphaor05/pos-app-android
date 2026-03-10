@@ -4,6 +4,14 @@ export interface ReceiptItem {
   price: number;
 }
 
+export interface ReceiptSettings {
+  businessName?: string;
+  address?: string;
+  contactTel?: string;
+  footerMessage?: string;
+  receiptSize?: string;
+}
+
 export interface ReceiptData {
   orderId: string;
   orderType?: string; // retail-only; default handled below
@@ -13,6 +21,7 @@ export interface ReceiptData {
   tax: number;
   total: number;
   createdAt: string;
+  settings?: ReceiptSettings;
 }
 
 export function generateReceiptHtml(receipt: ReceiptData): string {
@@ -20,16 +29,24 @@ export function generateReceiptHtml(receipt: ReceiptData): string {
     .map(
       item => `
       <tr>
-        <td style="padding:4px 0; font-size:13px; color:#e2e8f0;">${item.name}</td>
-        <td style="padding:4px 0; font-size:13px; color:#94a3b8; text-align:center;">${item.quantity}</td>
-        <td style="padding:4px 0; font-size:13px; color:#e2e8f0; text-align:right;">$${(item.price * item.quantity).toFixed(2)}</td>
+        <td style="padding:4px 0; font-size:12px; color:#222;">${item.name}</td>
+        <td style="padding:4px 0; font-size:12px; color:#444; text-align:center;">${item.quantity}</td>
+        <td style="padding:4px 0; font-size:12px; color:#222; text-align:right;">$${(item.price * item.quantity).toFixed(2)}</td>
       </tr>`
     )
     .join('');
 
   const date = new Date(receipt.createdAt);
-  const dateStr = date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
-  const timeStr = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+  const dateStr = date.toLocaleDateString('en-US', { year: 'numeric', month: 'numeric', day: 'numeric' });
+  const timeStr = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+  // Default to 58mm if not specified (approx 200px equivalent, but web browsers usually scale. We'll set max-width for printed ticket look)
+  const isWide = receipt.settings?.receiptSize?.includes('80mm');
+  const maxWidth = isWide ? '300px' : '200px';
+  const businessName = receipt.settings?.businessName || 'MY BUSINESS';
+  const address = receipt.settings?.address?.replace(/\\n|\n/g, '<br/>') || '123 Main Street<br/>City, Country';
+  const tel = receipt.settings?.contactTel || '+1 234 567 890';
+  const footerMessage = receipt.settings?.footerMessage?.replace(/\\n|\n/g, '<br/>') || 'Thank you for shopping with us!<br/>Please come again.';
 
   return `
 <!DOCTYPE html>
@@ -40,126 +57,111 @@ export function generateReceiptHtml(receipt: ReceiptData): string {
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: 'Courier New', monospace;
-      background: #0d1117;
-      color: #e2e8f0;
+      font-family: 'Courier New', Courier, monospace;
+      background: #fff;
+      color: #000;
       display: flex;
       justify-content: center;
-      padding: 20px;
+      padding: 0;
     }
     .receipt {
-      width: 320px;
-      background: #161b22;
-      border-radius: 12px;
-      padding: 24px 20px;
-      border: 1px solid #30363d;
+      width: 100%;
+      max-width: ${maxWidth};
+      background: #fff;
+      padding: 16px 10px;
+      margin: 0 auto;
     }
     .header {
       text-align: center;
-      border-bottom: 1px dashed #30363d;
-      padding-bottom: 16px;
-      margin-bottom: 16px;
+      margin-bottom: 12px;
     }
     .store-name {
-      font-size: 20px;
+      font-size: 16px;
       font-weight: bold;
-      color: #f0f6fc;
-      letter-spacing: 2px;
       margin-bottom: 4px;
     }
     .store-sub {
-      font-size: 11px;
-      color: #8b949e;
-      letter-spacing: 1px;
+      font-size: 12px;
+      line-height: 1.4;
+      margin-bottom: 2px;
     }
     .order-meta {
-      display: flex;
-      justify-content: space-between;
-      margin-bottom: 16px;
+      text-align: center;
       font-size: 11px;
-      color: #8b949e;
-    }
-    .order-type-badge {
-      background: #2563eb22;
-      color: #3b82f6;
-      border: 1px solid #2563eb;
-      border-radius: 4px;
-      padding: 2px 8px;
-      font-size: 10px;
-      font-weight: bold;
-      letter-spacing: 1px;
+      margin-bottom: 12px;
+      padding-bottom: 8px;
+      border-bottom: 1px dashed #000;
     }
     table {
       width: 100%;
       border-collapse: collapse;
-      margin-bottom: 16px;
+      margin-bottom: 12px;
     }
     thead th {
-      font-size: 10px;
-      color: #8b949e;
+      font-size: 11px;
       text-transform: uppercase;
-      letter-spacing: 1px;
-      padding-bottom: 8px;
-      border-bottom: 1px solid #30363d;
+      padding-bottom: 4px;
+      border-bottom: 1px dashed #000;
+      text-align: left;
     }
     thead th:nth-child(2) { text-align: center; }
     thead th:nth-child(3) { text-align: right; }
     .divider {
       border: none;
-      border-top: 1px dashed #30363d;
-      margin: 12px 0;
+      border-top: 1px dashed #000;
+      margin: 4px 0 12px 0;
     }
     .totals {
-      font-size: 12px;
+      font-size: 13px;
     }
     .total-row {
       display: flex;
       justify-content: space-between;
-      padding: 3px 0;
-      color: #8b949e;
+      padding: 2px 0;
     }
     .total-row.grand {
-      color: #f0f6fc;
-      font-size: 16px;
+      font-size: 15px;
       font-weight: bold;
-      padding-top: 8px;
-      border-top: 1px solid #30363d;
-      margin-top: 4px;
+      padding-top: 6px;
+      border-top: 1px solid #000;
+      margin-top: 2px;
     }
     .footer {
       text-align: center;
-      margin-top: 20px;
-      padding-top: 16px;
-      border-top: 1px dashed #30363d;
+      margin-top: 16px;
+      padding-top: 12px;
+      border-top: 1px dashed #000;
     }
     .footer-text {
       font-size: 11px;
-      color: #8b949e;
-      letter-spacing: 1px;
+      line-height: 1.4;
     }
-    .order-id {
-      font-size: 10px;
-      color: #484f58;
-      margin-top: 6px;
+    .barcode {
+      margin-top: 10px;
+      font-size: 8px;
+      letter-spacing: 2px;
     }
   </style>
 </head>
 <body>
   <div class="receipt">
     <div class="header">
-      <div class="store-name">POS TERMINAL</div>
-      <div class="store-sub">FISCAL RECEIPT</div>
+      <div class="store-name">${businessName}</div>
+      <div class="store-sub">${address}</div>
+      <div class="store-sub">Tel: ${tel}</div>
     </div>
 
     <div class="order-meta">
-      <div>
-        <div>${dateStr}</div>
-        <div>${timeStr}</div>
-      </div>
-      <div class="order-type-badge">${(receipt.orderType ?? 'RETAIL').toUpperCase()}</div>
-          <th style="text-align:left;">Item</th>
+      <div>${dateStr}, ${timeStr}</div>
+      <div style="margin-top:4px;">${(receipt.orderType ?? 'RETAIL').toUpperCase()} - #${receipt.orderId.slice(0, 8).toUpperCase()}</div>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Item</th>
           <th>Qty</th>
-          <th style="text-align:right;">Amount</th>
+          <th>SubT</th>
         </tr>
       </thead>
       <tbody>${itemRows}</tbody>
@@ -177,10 +179,11 @@ export function generateReceiptHtml(receipt: ReceiptData): string {
         <span>Discount</span>
         <span>-$${receipt.discount.toFixed(2)}</span>
       </div>` : ''}
+      ${receipt.tax > 0 ? `
       <div class="total-row">
-        <span>Tax (5%)</span>
+        <span>Tax</span>
         <span>$${receipt.tax.toFixed(2)}</span>
-      </div>
+      </div>` : ''}
       <div class="total-row grand">
         <span>TOTAL</span>
         <span>$${receipt.total.toFixed(2)}</span>
@@ -188,8 +191,8 @@ export function generateReceiptHtml(receipt: ReceiptData): string {
     </div>
 
     <div class="footer">
-      <div class="footer-text">THANK YOU FOR YOUR PURCHASE</div>
-      <div class="order-id">Order #${receipt.orderId.slice(0, 8).toUpperCase()}</div>
+      <div class="footer-text">${footerMessage}</div>
+      <div class="barcode">|| | || | || || | | | ||| | ||</div>
     </div>
   </div>
 </body>

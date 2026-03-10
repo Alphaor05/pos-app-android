@@ -1,33 +1,33 @@
 {
   "expo": {
-    "name": "POS Terminal",
-    "slug": "pos-terminal",
+    "name": "CrunchNum",
+    "slug": "crunch-num",
     "version": "1.0.0",
     "orientation": "landscape",
-    "icon": "./assets/images/icon.png",
-    "scheme": "posterminal",
+    "icon": "./assets/images/CrunchNumIcon.png",
+    "scheme": "crunch-num",
     "userInterfaceStyle": "dark",
     "newArchEnabled": true,
     "splash": {
-      "image": "./assets/images/splash-icon.png",
+      "image": "./assets/images/CrunchNumIcon.png",
       "resizeMode": "contain",
       "backgroundColor": "#0D1117"
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.posterminal"
+      "bundleIdentifier": "com.crunch-num"
     },
     "android": {
-      "package": "com.posterminal",
+      "package": "com.crunch-num",
       "adaptiveIcon": {
         "backgroundColor": "#0D1117",
-        "foregroundImage": "./assets/images/android-icon-foreground.png",
+        "foregroundImage": "./assets/images/CrunchNumIcon.png",
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       }
     },
     "web": {
-      "favicon": "./assets/images/favicon.png"
+      "favicon": "./assets/images/CrunchNumIcon.png"
     },
     "plugins": [
       [

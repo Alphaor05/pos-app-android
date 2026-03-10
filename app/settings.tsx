@@ -300,7 +300,7 @@ function AboutSection() {
       <View style={styles.aboutCard}>
         <View style={styles.aboutRow}>
           <Text style={styles.aboutLabel}>App Name</Text>
-          <Text style={styles.aboutValue}>POS Terminal</Text>
+          <Text style={styles.aboutValue}>CrunchNum</Text>
         </View>
         <View style={styles.aboutRow}>
           <Text style={styles.aboutLabel}>Version</Text>

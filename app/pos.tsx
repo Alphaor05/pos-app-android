@@ -111,7 +111,7 @@ async function fetchProductsFromSupabase(shopId: string | null): Promise<Product
 export default function POSScreen() {
   const { logout, employee } = useAuth();
   const { items, addItem, removeItem, updateQuantity, clearCart, total } = useCart();
-  const { connectedDevice, status: btStatus } = useBluetooth();
+  const { connectedDevice, status: btStatus, printReceipt } = useBluetooth();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
 
@@ -145,6 +145,28 @@ export default function POSScreen() {
     },
     enabled: !!supabase,
   });
+
+  const { data: receiptSettings } = useQuery({
+    queryKey: ['receipt-settings'],
+    queryFn: async () => {
+      if (!supabase) return null;
+      const { data, error } = await supabase.from('receipt_settings').select('*').limit(1).single();
+      if (error && error.code !== 'PGRST116') throw error;
+      return data || null;
+    },
+    enabled: !!supabase,
+  });
+
+  const parsedSettings = useMemo(() => {
+    if (!receiptSettings) return undefined;
+    return {
+      businessName: receiptSettings.business_name,
+      address: receiptSettings.address,
+      contactTel: receiptSettings.contact_tel,
+      footerMessage: receiptSettings.footer_message,
+      receiptSize: receiptSettings.receipt_size,
+    };
+  }, [receiptSettings]);
 
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<string>('USD Cash');
   const [showPaymentPicker, setShowPaymentPicker] = useState(false);
@@ -238,7 +260,8 @@ export default function POSScreen() {
   }, []);
 
   // listen for receipts coming back from Supabase; the server
-  // or another terminal may insert rows and we want to print them
+  // or another terminal may insert rows and we want to print them.
+  // Note: Local sales trigger optimistic prints immediately, we filter locally generated ones here if possible.
   useEffect(() => {
     if (!supabase) return;
     const channel = supabase
@@ -249,23 +272,27 @@ export default function POSScreen() {
         async (payload: any) => {
           try {
             const row = payload.new as Record<string, any>;
-            const html = generateReceiptHtml({
+
+            // Avoid double printing local orders if employee ID matches or device matches
+            // We'll rely entirely on optimistic printing for local, so we could theoretically skip this.
+            // But we'll leave it in case another terminal sends it.
+
+            await printReceipt({
               orderId: row.order_id ?? row.id,
-              orderType: row.order_type ?? 'Dine In',
               items: Array.isArray(row.items) ? row.items : [],
               subtotal: Number(row.subtotal ?? 0),
               discount: Number(row.discount ?? 0),
               tax: Number(row.tax ?? 0),
               total: Number(row.total ?? 0),
               createdAt: row.created_at ?? new Date().toISOString(),
+              settings: parsedSettings
             });
-            await Print.printAsync({ html });
           } catch (_) { }
         }
       )
       .subscribe();
     return () => { if (supabase) supabase.removeChannel(channel); };
-  }, []);
+  }, [parsedSettings]);
 
   // subscribe to product changes so the grid updates automatically
   const queryClient = useQueryClient();
@@ -382,6 +409,32 @@ export default function POSScreen() {
     // still sync queued records for redundancy
     import('@/lib/sync').then(({ syncSalesQueue }) => syncSalesQueue());
 
+    const { logActivity } = await import('@/lib/activityLogger');
+    await logActivity('sale_complete', employee?.employee_id || null, {
+      amount: grandTotal,
+      discount: discountAmount,
+    });
+
+    // Generate and optimistically print the receipt locally (allows printing offline)
+    try {
+      await printReceipt({
+        orderId: saleRecord.orderId,
+        items: saleRecord.items.map((i: any) => ({
+          name: i.name,
+          quantity: i.quantity,
+          price: i.price
+        })),
+        subtotal: saleRecord.subtotal,
+        discount: saleRecord.discount,
+        tax: saleRecord.tax,
+        total: saleRecord.total,
+        createdAt: saleRecord.createdAt,
+        settings: parsedSettings
+      });
+    } catch (e) {
+      console.warn('Silent local print failed', e);
+    }
+
     setOrderSuccess(true);
     setTimeout(() => {
       clearCart();
@@ -432,9 +485,13 @@ export default function POSScreen() {
         <Pressable style={styles.sidebarOverlay} onPress={() => setSidebarOpen(false)}>
           <View style={styles.sidebarDropdown}>
             <SidebarItem icon="view-grid-outline" label="Products" active />
-            <SidebarItem icon="cart-outline" label="Sales" onPress={() => { setSidebarOpen(false); router.push('/sales'); }} />
-            <SidebarItem icon="chart-bar" label="Reports" />
-            <SidebarItem icon="account-multiple-outline" label="Customers" />
+            {employee?.role === 'Admin' && (
+              <>
+                <SidebarItem icon="cart-outline" label="Sales" onPress={() => { setSidebarOpen(false); router.push('/sales'); }} />
+                <SidebarItem icon="chart-bar" label="Reports" />
+                <SidebarItem icon="account-multiple-outline" label="Customers" />
+              </>
+            )}
             <SidebarItem
               icon="cog-outline"
               label="Settings"
@@ -548,13 +605,22 @@ export default function POSScreen() {
             </View>
 
             {items.length > 0 && (
-              <Pressable style={styles.clearRow} onPress={clearCart}>
+              <Pressable style={styles.clearRow} onPress={async () => {
+                const { logActivity } = await import('@/lib/activityLogger');
+                await logActivity('transaction_cancelled', employee?.employee_id || null);
+                clearCart();
+              }}>
                 <Feather name="trash-2" size={13} color={C.danger} />
                 <Text style={styles.clearRowText}>Clear order</Text>
               </Pressable>
             )}
             {items.length > 0 && (
-              <Pressable style={styles.voidBtn} onPress={() => { clearCart(); if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning); }}>
+              <Pressable style={styles.voidBtn} onPress={async () => {
+                const { logActivity } = await import('@/lib/activityLogger');
+                await logActivity('transaction_void', employee?.employee_id || null, { amount: grandTotal });
+                clearCart();
+                if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+              }}>
                 <Text style={styles.voidBtnText}>VOID</Text>
               </Pressable>
             )}

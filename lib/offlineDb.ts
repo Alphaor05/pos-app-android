@@ -105,6 +105,15 @@ export function initDb() {
       );
     `);
 
+    localDb.execSync(`
+      CREATE TABLE IF NOT EXISTS activity_logs_queue (
+        id TEXT PRIMARY KEY,
+        data TEXT,
+        synced INTEGER DEFAULT 0,
+        created_at TEXT
+      );
+    `);
+
     // seed a couple items if products table is empty
     const countRow = localDb.getFirstSync(`SELECT COUNT(*) as c FROM products;`);
     if (countRow && countRow.c === 0) {
@@ -211,6 +220,66 @@ export function markSaleSynced(id: string): Promise<void> {
     try {
       db.runSync(
         `UPDATE sales_queue SET synced = 1 WHERE id = ?;`,
+        [id]
+      );
+      resolve();
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+export function queueActivityLog(log: any): Promise<void> {
+  if (Platform.OS === 'web') return Promise.resolve();
+  const localDb = getDb();
+  if (!localDb) return Promise.resolve();
+
+  return new Promise((resolve, reject) => {
+    try {
+      const id = Date.now().toString() + Math.random().toString(36).substr(2, 6);
+      const dataStr = JSON.stringify(log);
+      const created = new Date().toISOString();
+      localDb.runSync(
+        `INSERT INTO activity_logs_queue (id, data, synced, created_at) VALUES (?, ?, ?, ?);`,
+        [id, dataStr, 0, created]
+      );
+      resolve();
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+export function getPendingActivityLogs(): Promise<SaleRecord[]> {
+  if (Platform.OS === 'web') return Promise.resolve([]);
+  const localDb = getDb();
+  if (!localDb) return Promise.resolve([]);
+
+  return new Promise((resolve, reject) => {
+    try {
+      const rows = localDb.getAllSync(`SELECT * FROM activity_logs_queue WHERE synced = 0;`);
+      const arr: SaleRecord[] = rows.map((r: any) => ({
+        id: r.id,
+        data: typeof r.data === 'string' ? JSON.parse(r.data) : r.data,
+        synced: r.synced === 1,
+        created_at: r.created_at,
+      }));
+      resolve(arr);
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+export function markActivityLogSynced(id: string): Promise<void> {
+  if (Platform.OS === 'web') return Promise.resolve();
+  const localDb = getDb();
+  if (!localDb) return Promise.resolve();
+
+  return new Promise((resolve, reject) => {
+    try {
+      localDb.runSync(
+        `UPDATE activity_logs_queue SET synced = 1 WHERE id = ?;`,
         [id]
       );
       resolve();

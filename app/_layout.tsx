@@ -65,16 +65,32 @@ export default function RootLayout() {
     Inter_700Bold,
   });
 
+  const [appIsReady, setAppIsReady] = React.useState(false);
+
   useEffect(() => {
-    if (fontsLoaded) {
+    async function prepare() {
+      try {
+        // prepare local storage and background sync
+        initDb();
+        initSync();
+        // Pre-load any other resources if needed
+      } catch (e) {
+        console.warn('Initialization error:', e);
+      } finally {
+        setAppIsReady(true);
+      }
+    }
+
+    prepare();
+  }, []);
+
+  useEffect(() => {
+    if (fontsLoaded && appIsReady) {
       SplashScreen.hideAsync();
     }
-    // prepare local storage and background sync
-    initDb();
-    initSync();
-  }, [fontsLoaded]);
+  }, [fontsLoaded, appIsReady]);
 
-  if (!fontsLoaded) return null;
+  if (!fontsLoaded || !appIsReady) return null;
 
   return (
     <ErrorBoundary>

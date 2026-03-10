@@ -5,6 +5,7 @@ import {
   StyleSheet,
   Pressable,
   Platform,
+  Image,
 } from 'react-native';
 import Animated, {
   useSharedValue,
@@ -124,9 +125,13 @@ export default function LoginScreen() {
     >
       <View style={styles.logoArea}>
         <View style={styles.logoCircle}>
-          <MaterialCommunityIcons name="point-of-sale" size={36} color={C.accent} />
+          <Image
+            source={require('@/assets/images/CrunchNumIcon.png')}
+            style={styles.logoImage}
+            resizeMode="contain"
+          />
         </View>
-        <Text style={styles.appTitle}>POS Terminal</Text>
+        <Text style={styles.appTitle}>CrunchNum</Text>
         <Text style={styles.appSubtitle}>Enter your PIN to continue</Text>
       </View>
 
@@ -198,15 +203,20 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   logoCircle: {
-    width: 72,
-    height: 72,
-    borderRadius: 20,
+    width: 80,
+    height: 80,
+    borderRadius: 22,
     backgroundColor: C.accentDim,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 4,
     borderWidth: 1,
     borderColor: C.accent,
+    overflow: 'hidden',
+  },
+  logoImage: {
+    width: '100%',
+    height: '100%',
   },
   appTitle: {
     fontFamily: 'Inter_700Bold',
