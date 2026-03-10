@@ -451,10 +451,7 @@ export default function POSScreen() {
           <Pressable style={styles.topBarIconBtn} onPress={() => setSidebarOpen(v => !v)}>
             <Ionicons name="menu" size={22} color={C.text} />
           </Pressable>
-          <View style={styles.pageSelector}>
-            <Text style={styles.pageSelectorText}>PAGE 1</Text>
-            <MaterialIcons name="arrow-drop-down" size={20} color={C.textSecondary} />
-          </View>
+
           <View style={styles.searchBox}>
             <Feather name="search" size={16} color={C.textSecondary} />
             <TextInput
@@ -917,22 +914,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  pageSelector: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: C.card,
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    gap: 2,
-    borderWidth: 1,
-    borderColor: C.border,
-  },
-  pageSelectorText: {
-    fontFamily: 'Inter_600SemiBold',
-    fontSize: 13,
-    color: C.text,
-  },
+
   searchBox: {
     flex: 1,
     flexDirection: 'row',
