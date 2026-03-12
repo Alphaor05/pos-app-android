@@ -376,6 +376,7 @@ export default function POSScreen() {
       createdAt: new Date().toISOString(),
       shopId,
       customerName: customerName.trim() || null,
+      paymentMethod: selectedPaymentMethod,
     };
 
     // Always queue the sale locally for offline support

@@ -50,7 +50,7 @@ export async function syncSalesQueue() {
             p_items: rec.data.items,
             p_order_id: rec.data.orderId || rec.data.order_id,
             p_total_amount: rec.data.total || rec.data.amount || 0,
-            p_payment_method: rec.data.payment_method || 'Cash',
+            p_payment_method: rec.data.paymentMethod || rec.data.payment_method || 'Cash',
             p_employee_id: empId,
             p_customer_name: rec.data.customerName || null,
           });
