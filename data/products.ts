@@ -7,6 +7,31 @@ export interface Product {
   sku?: string;
   inStock?: number;
 }
+export interface DiscountPlan {
+  id: string;
+  name: string;
+  discount_type: 'percentage' | 'fixed';
+  discount_value: number;
+  applicable_to: 'all' | 'category' | 'product';
+  target_id?: string;
+  target_name?: string;
+  status: string;
+  start_date: string;
+  end_date: string;
+}
+
+export interface PricingPlan {
+  id: string;
+  name: string;
+  description?: string;
+  price_multiplier: number;
+  applicable_to: 'all' | 'category' | 'product';
+  target_id?: string;
+  target_name?: string;
+  status: string;
+  start_date: string;
+  end_date: string;
+}
 
 export const FALLBACK_PRODUCTS: Product[] = [
   { id: '1', name: 'Espresso', price: 2.50, category: 'Beverages', image_url: 'https://images.unsplash.com/photo-1510707577719-ae7c14805e3a?w=200&q=80' },

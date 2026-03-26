@@ -17,68 +17,94 @@ export const printerService = {
                 deviceName: device.name
             });
 
+            console.log(`Printer: Connecting to ${device.name} at ${device.address}...`);
             await printer.connect();
+            console.log('Printer: Connected.');
 
-            await printer.addTextAlign(PrinterConstants.ALIGN_CENTER);
-            await printer.addTextSize({ width: 2, height: 2 });
-            await printer.addText(data.settings?.businessName || 'MY BUSINESS');
-            await printer.addText('\n');
-
-            await printer.addTextSize({ width: 1, height: 1 });
-            if (data.settings?.address) {
-                await printer.addText(data.settings.address);
-                await printer.addText('\n');
+            // NEW: Initialize the printer instance if method exists
+            if (typeof printer.init === 'function') {
+                await printer.init();
             }
-            if (data.settings?.contactTel) {
-                await printer.addText(`Tel: ${data.settings.contactTel}`);
-                await printer.addText('\n');
+
+            // NEW: Clear any existing commands in the buffer
+            await printer.clearCommandBuffer();
+
+            const { ESC_POS_COMMANDS, formatRow4, formatRow2 } = require('@/lib/escPosUtils');
+            
+            // 1. RESET USING RAW COMMAND (More reliable than addText)
+            await printer.addCommand(new Uint8Array([0x1B, 0x40]));
+            
+            await printer.addTextAlign(PrinterConstants.ALIGN_CENTER);
+            if (data.settings?.header) {
+                await printer.addText(data.settings.header + '\n');
+            } else {
+                await printer.addText('CRUNCHNUM\n');
             }
 
             await printer.addFeedLine(1);
-            await printer.addText(`${dateStr} ${timeStr}\n`);
-            await printer.addText(`SALE - #${data.orderId.slice(0, 8).toUpperCase()}\n`);
-            // Use local dashedLine logic or pass it from context
-            await printer.addText('-'.repeat(printerWidth) + '\n');
-
+            await printer.addText(`${dateStr}, ${timeStr}\n`);
+            if (data.paymentMethod) {
+                await printer.addText(`Payment: ${data.paymentMethod}\n`);
+            }
+            await printer.addText(`Order: #${data.orderId.slice(0, 8).toUpperCase()}\n`);
+            await printer.addFeedLine(1);
+            
             await printer.addTextAlign(PrinterConstants.ALIGN_LEFT);
-            // Row formatting should be passed or reimplemented here
-            // For simplicity in this bridge, we assume the strings are already formatted
-            // Or we can import the utils here too
-            const { formatRow3, formatRow2 } = require('@/lib/escPosUtils');
 
-            await printer.addText(formatRow3('Qty', 'Item', 'SubT', printerWidth) + '\n');
+            await printer.addText(formatRow4('Qty', 'Item', 'Price', 'SubT', printerWidth) + '\n');
             await printer.addText('-'.repeat(printerWidth) + '\n');
 
             for (const item of data.items) {
-                await printer.addText(formatRow3(
+                // Ensure name is safe for printing
+                const safeName = item.name.replace(/[^\x20-\x7E]/g, ''); 
+                await printer.addText(formatRow4(
                     item.quantity.toString(),
-                    item.name,
+                    safeName,
+                    `$${item.price.toFixed(2)}`,
                     `$${(item.price * item.quantity).toFixed(2)}`,
                     printerWidth
                 ) + '\n');
             }
 
             await printer.addText('-'.repeat(printerWidth) + '\n');
-            await printer.addText(formatRow2('Subtotal', `$${data.subtotal.toFixed(2)}`, printerWidth) + '\n');
-
-            if (data.discount > 0) {
-                await printer.addText(formatRow2('Discount', `-$${data.discount.toFixed(2)}`, printerWidth) + '\n');
-            }
-
             await printer.addFeedLine(1);
-            await printer.addTextSize({ width: 2, height: 2 });
-            await printer.addText(formatRow2('TOTAL', `$${data.total.toFixed(2)}`, printerWidth) + '\n');
+            
+            await printer.addText(formatRow2('TOTAL', `$${data.total.toFixed(2)}`, printerWidth / 2) + '\n');
 
-            await printer.addTextSize({ width: 1, height: 1 });
             await printer.addFeedLine(1);
             await printer.addTextAlign(PrinterConstants.ALIGN_CENTER);
-            await printer.addText(data.settings?.footerMessage || 'Thank you!\n');
+            await printer.addText('-'.repeat(printerWidth) + '\n');
+            if (data.settings?.footer) {
+                await printer.addText(data.settings.footer + '\n');
+            } else {
+                await printer.addText('Thank you for shopping!\n');
+            }
 
-            await printer.addFeedLine(3);
-            await printer.addCut(PrinterConstants.CUT_FEED);
+            await printer.addFeedLine(5); // Extra feed for manual tearing
+            
+            // 2. CONDITIONAL CUT - only for 80mm printers (which usually have cutters)
+            const is80mm = data.settings?.receiptSize?.includes('80mm');
+            if (is80mm) {
+                console.log('Printer: Sending cut command (80mm only)...');
+                await printer.addCut(PrinterConstants.CUT_FEED);
+            } else {
+                console.log('Printer: Skipping cut command (58mm/non-80mm)...');
+            }
 
+            console.log('Printer: Sending data to printer...');
             await printer.sendData();
+            
+            try {
+                const status = await printer.getStatus();
+                console.log('Printer Post-Print Status:', JSON.stringify(status));
+            } catch (e) {
+                console.log('Printer Status check failed (non-critical)');
+            }
+
+            // A small delay before disconnect helps some printers finish processing 
+            await new Promise(resolve => setTimeout(resolve, 1500));
             await printer.disconnect();
+            console.log('Printer: Print job complete.');
 
             return true;
         } catch (error) {

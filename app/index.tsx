@@ -1,4 +1,5 @@
-import React, { useState, useRef, useEffect } from 'react';
+/** vCache_101 **/
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -6,6 +7,7 @@ import {
   Pressable,
   Platform,
   Image,
+  ScrollView,
 } from 'react-native';
 import Animated, {
   useSharedValue,
@@ -15,7 +17,7 @@ import Animated, {
   withSpring,
   Easing,
 } from 'react-native-reanimated';
-import { router } from 'expo-router';
+// router removed as it was unused
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -41,7 +43,7 @@ function PinDot({ filled, index }: { filled: boolean; index: number }) {
         scale.value = withSpring(1);
       });
     }
-  }, [filled]);
+  }, [filled, scale]);
 
   const animStyle = useAnimatedStyle(() => ({
     transform: [{ scale: scale.value }],
@@ -117,46 +119,53 @@ export default function LoginScreen() {
   const botPad = Platform.OS === 'web' ? 34 : insets.bottom;
 
   return (
-    <View
-      style={[
-        styles.container,
-        { paddingTop: topPad, paddingBottom: botPad },
-      ]}
+    <ScrollView 
+      style={{ flex: 1, backgroundColor: C.background }}
+      contentContainerStyle={{ flexGrow: 1, justifyContent: 'center' }}
+      showsVerticalScrollIndicator={false}
+      bounces={false}
     >
-      <View style={styles.logoArea}>
-        <View style={styles.logoCircle}>
-          <Image
-            source={require('@/assets/images/CrunchNumIcon.png')}
-            style={styles.logoImage}
-            resizeMode="contain"
-          />
-        </View>
-        <Text style={styles.appTitle}>CrunchNum</Text>
-        <Text style={styles.appSubtitle}>Enter your PIN to continue</Text>
-      </View>
-
-      <Animated.View style={[styles.pinRow, shakeStyle]}>
-        {Array.from({ length: PIN_LENGTH }).map((_, i) => (
-          <PinDot key={i} filled={i < pin.length} index={i} />
-        ))}
-      </Animated.View>
-
-      {error && (
-        <Text style={styles.errorText}>Incorrect PIN. Try again.</Text>
-      )}
-      {!error && <View style={{ height: 20 }} />}
-
-      <View style={styles.numpad}>
-        {NUMPAD.map((row, ri) => (
-          <View key={ri} style={styles.numpadRow}>
-            {row.map((key, ki) => (
-              <NumKey key={ki} value={key} onPress={handlePress} />
-            ))}
+      <View
+        style={[
+          styles.container,
+          { paddingTop: topPad + 40, paddingBottom: botPad + 40 },
+        ]}
+      >
+        <View style={styles.logoArea}>
+          <View style={styles.logoCircle}>
+            <Image
+              source={require('@/assets/images/CrunchNumIcon.png')}
+              style={styles.logoImage}
+              resizeMode="contain"
+            />
           </View>
-        ))}
-      </View>
+          <Text style={styles.appTitle}>CrunchNum</Text>
+          <Text style={styles.appSubtitle}>Enter your PIN to continue</Text>
+        </View>
 
-    </View>
+        <Animated.View style={[styles.pinRow, shakeStyle]}>
+          {Array.from({ length: PIN_LENGTH }).map((_, i) => (
+            <PinDot key={i} filled={i < pin.length} index={i} />
+          ))}
+        </Animated.View>
+
+        {error && (
+          <Text style={styles.errorText}>Incorrect PIN. Try again.</Text>
+        )}
+        {!error && <View style={{ height: 20 }} />}
+
+        <View style={styles.numpad}>
+          {NUMPAD.map((row, ri) => (
+            <View key={ri} style={styles.numpadRow}>
+              {row.map((key, ki) => (
+                <NumKey key={ki} value={key} onPress={handlePress} />
+              ))}
+            </View>
+          ))}
+        </View>
+
+      </View>
+    </ScrollView>
   );
 }
 
@@ -192,11 +201,10 @@ function NumKey({ value, onPress }: { value: string; onPress: (k: string) => voi
 
 const styles = StyleSheet.create({
   container: {
-    flex: 1,
     backgroundColor: C.background,
     alignItems: 'center',
-    justifyContent: 'center',
     gap: 24,
+    minHeight: 750, // Force extra room for small landscape screens
   },
   logoArea: {
     alignItems: 'center',

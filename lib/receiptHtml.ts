@@ -5,10 +5,8 @@ export interface ReceiptItem {
 }
 
 export interface ReceiptSettings {
-  businessName?: string;
-  address?: string;
-  contactTel?: string;
-  footerMessage?: string;
+  header?: string;
+  footer?: string;
   receiptSize?: string;
 }
 
@@ -43,10 +41,8 @@ export function generateReceiptHtml(receipt: ReceiptData): string {
   // Default to 58mm if not specified (approx 200px equivalent, but web browsers usually scale. We'll set max-width for printed ticket look)
   const isWide = receipt.settings?.receiptSize?.includes('80mm');
   const maxWidth = isWide ? '300px' : '200px';
-  const businessName = receipt.settings?.businessName || 'MY BUSINESS';
-  const address = receipt.settings?.address?.replace(/\\n|\n/g, '<br/>') || '123 Main Street<br/>City, Country';
-  const tel = receipt.settings?.contactTel || '+1 234 567 890';
-  const footerMessage = receipt.settings?.footerMessage?.replace(/\\n|\n/g, '<br/>') || 'Thank you for shopping with us!<br/>Please come again.';
+  const headerHtml = receipt.settings?.header?.replace(/\\n|\n/g, '<br/>') || 'MY BUSINESS<br/>123 Main Street<br/>Tel: +1 234 567 890';
+  const footerHtml = receipt.settings?.footer?.replace(/\\n|\n/g, '<br/>') || 'Thank you for shopping with us!<br/>Please come again.';
 
   return `
 <!DOCTYPE html>
@@ -146,9 +142,7 @@ export function generateReceiptHtml(receipt: ReceiptData): string {
 <body>
   <div class="receipt">
     <div class="header">
-      <div class="store-name">${businessName}</div>
-      <div class="store-sub">${address}</div>
-      <div class="store-sub">Tel: ${tel}</div>
+      <div class="store-name">${headerHtml}</div>
     </div>
 
     <div class="order-meta">
@@ -191,7 +185,7 @@ export function generateReceiptHtml(receipt: ReceiptData): string {
     </div>
 
     <div class="footer">
-      <div class="footer-text">${footerMessage}</div>
+      <div class="footer-text">${footerHtml}</div>
       <div class="barcode">|| | || | || || | | | ||| | ||</div>
     </div>
   </div>

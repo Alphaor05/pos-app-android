@@ -1,5 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode } from 'react';
+import { Platform, Alert } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Haptics from 'expo-haptics';
 import { centerText, dashedLine, formatRow2, formatRow3 } from '@/lib/escPosUtils';
 import { printerService } from '@/lib/printerService';
 
@@ -22,6 +24,7 @@ export interface ReceiptData {
   tax: number;
   total: number;
   createdAt: string;
+  paymentMethod?: string;
   settings?: {
     businessName?: string;
     address?: string;
@@ -40,6 +43,7 @@ interface BluetoothContextValue {
   connect: (device: BluetoothDevice) => Promise<void>;
   disconnect: () => void;
   printReceipt: (data: ReceiptData) => Promise<boolean>;
+  testPrint: () => Promise<boolean>;
 }
 
 const BluetoothContext = createContext<BluetoothContextValue | null>(null);
@@ -59,43 +63,138 @@ export function BluetoothProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     AsyncStorage.getItem(STORAGE_KEY).then((stored) => {
       if (stored) {
-        const device = JSON.parse(stored) as BluetoothDevice;
-        setConnectedDevice(device);
-        setStatus('connected');
+        try {
+          const device = JSON.parse(stored) as BluetoothDevice;
+          setConnectedDevice(device);
+          setStatus('connected');
+        } catch (e) {
+          AsyncStorage.removeItem(STORAGE_KEY);
+        }
       }
     });
   }, []);
 
-  const startScan = () => {
-    setStatus('scanning');
-    setScannedDevices([]);
-    let idx = 0;
-    const interval = setInterval(() => {
-      if (idx < MOCK_DEVICES.length) {
-        setScannedDevices(prev => [...prev, MOCK_DEVICES[idx]]);
-        idx++;
-      } else {
-        clearInterval(interval);
-        setStatus(connectedDevice ? 'connected' : 'disconnected');
-      }
-    }, 700);
+  const checkPermissions = async () => {
+    if (Platform.OS !== 'android') return true;
+    
+    // For Android 12+ (API 31+)
+    if (Platform.Version >= 31) {
+      const { PermissionsAndroid } = require('react-native');
+      const results = await PermissionsAndroid.requestMultiple([
+        PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
+        PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
+        PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+      ]);
+      return (
+        results['android.permission.BLUETOOTH_SCAN'] === PermissionsAndroid.RESULTS.GRANTED &&
+        results['android.permission.BLUETOOTH_CONNECT'] === PermissionsAndroid.RESULTS.GRANTED &&
+        results['android.permission.ACCESS_FINE_LOCATION'] === PermissionsAndroid.RESULTS.GRANTED
+      );
+    } else {
+      const { PermissionsAndroid } = require('react-native');
+      const granted = await PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION
+      );
+      return granted === PermissionsAndroid.RESULTS.GRANTED;
+    }
   };
 
-  const stopScan = () => {
+  const startScan = async () => {
+    const hasPerms = await checkPermissions();
+    if (!hasPerms) {
+      console.warn('Bluetooth permissions denied');
+      return;
+    }
+
+    setStatus('scanning');
+    setScannedDevices([]);
+    
+    if (Platform.OS === 'web') {
+      setStatus('disconnected');
+      return;
+    }
+
+    try {
+      const { Printer } = require('react-native-esc-pos-printer');
+      
+      // Check if discovery is available
+      if (!Printer.startDiscovery) {
+        console.warn('Printer discovery not supported by this version/platform');
+        setStatus('disconnected');
+        return;
+      }
+
+      // Try with explicit type for better reliability on some units
+      await Printer.startDiscovery({ type: 'bluetooth' }, (device: any) => {
+        setScannedDevices(prev => {
+          // Use deviceName or target as ID
+          const deviceId = device.target || device.deviceName;
+          if (!deviceId || prev.find(d => d.id === deviceId)) return prev;
+          
+          // New device discovered - VIBRATE
+          if (Platform.OS !== 'web') {
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+          }
+
+          return [...prev, {
+            id: deviceId,
+            name: device.deviceName || 'Pos Printer',
+            address: (device.target || '').replace('BT:', ''),
+            rssi: device.rssi || 0
+          }];
+        });
+      });
+
+      // Stop scan after 12 seconds
+      setTimeout(() => {
+        Printer.stopDiscovery().catch(() => {});
+        setStatus(prev => {
+          if (prev === 'scanning') {
+            return connectedDevice ? 'connected' : 'disconnected';
+          }
+          return prev;
+        });
+      }, 12000);
+
+    } catch (error: any) {
+      console.warn('Discovery failed', error);
+      // provide more context in status if possible
+      const msg = error?.message || '';
+      if (msg.includes('Bluetooth') && msg.includes('off')) {
+        setStatus('bluetooth_off' as any);
+      } else if (msg.includes('Location') || msg.includes('permission')) {
+        setStatus('location_off' as any);
+      } else {
+        setStatus('disconnected');
+      }
+    }
+  };
+
+  const stopScan = async () => {
+    try {
+      const { Printer } = require('react-native-esc-pos-printer');
+      if (Printer.stopDiscovery) await Printer.stopDiscovery();
+    } catch (e) {}
     setStatus(connectedDevice ? 'connected' : 'disconnected');
   };
 
   const connect = async (device: BluetoothDevice) => {
     setStatus('connecting');
     try {
-      // In a real environment, you would instantiate and connect here:
-      // const printer = new Printer({ target: `BT:${device.address}`, deviceName: device.name });
-      // await printer.connect();
+      const hasPerms = await checkPermissions();
+      if (!hasPerms) {
+        Alert.alert('Permissions Required', 'Bluetooth and Location permissions are needed to connect to printers.');
+        setStatus('disconnected');
+        return;
+      }
 
-      await new Promise(r => setTimeout(r, 1500));
-      setConnectedDevice(device);
+      // Ensure the stored address is just the MAC address
+      const cleanAddress = device.address.replace(/^BT:|^TCP:|^USB:/, '');
+      const cleanDevice = { ...device, address: cleanAddress };
+
+      setConnectedDevice(cleanDevice);
       setStatus('connected');
-      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(device));
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(cleanDevice));
     } catch (error) {
       console.warn('Connection failed', error);
       setStatus('disconnected');
@@ -117,6 +216,30 @@ export function BluetoothProvider({ children }: { children: ReactNode }) {
     }, data);
   };
 
+  const testPrint = async () => {
+    if (!connectedDevice) {
+      Alert.alert('No Printer', 'Please connect a printer first.');
+      return false;
+    }
+    const testData: ReceiptData = {
+      orderId: 'TEST-' + Math.random().toString(36).substring(7).toUpperCase(),
+      items: [
+        { name: 'Test Connection', quantity: 1, price: 0.00 }
+      ],
+      subtotal: 0.00,
+      discount: 0,
+      tax: 0,
+      total: 0.00,
+      paymentMethod: 'Diagnostics',
+      createdAt: new Date().toISOString(),
+      settings: {
+        businessName: 'Printer Test',
+        receiptSize: '58mm' // Default to 58mm to be safe during test
+      }
+    };
+    return await printerService.printReceipt({ address: connectedDevice.address, name: connectedDevice.name }, testData);
+  };
+
   const value = useMemo(() => ({
     connectedDevice,
     status,
@@ -126,6 +249,7 @@ export function BluetoothProvider({ children }: { children: ReactNode }) {
     connect,
     disconnect,
     printReceipt,
+    testPrint,
   }), [connectedDevice, status, scannedDevices]);
 
   return <BluetoothContext.Provider value={value}>{children}</BluetoothContext.Provider>;

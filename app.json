@@ -8,17 +8,19 @@
     "scheme": "crunch-num",
     "userInterfaceStyle": "dark",
     "newArchEnabled": true,
-    "splash": {
-      "image": "./assets/images/CrunchNumIcon.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#0D1117"
-    },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.crunch-num"
     },
     "android": {
-      "package": "com.crunch-num",
+      "package": "com.alphaor05.crunchnum",
+      "permissions": [
+        "android.permission.BLUETOOTH",
+        "android.permission.BLUETOOTH_ADMIN",
+        "android.permission.BLUETOOTH_SCAN",
+        "android.permission.BLUETOOTH_CONNECT",
+        "android.permission.ACCESS_FINE_LOCATION"
+      ],
       "adaptiveIcon": {
         "backgroundColor": "#0D1117",
         "foregroundImage": "./assets/images/CrunchNumIcon.png",
@@ -42,6 +44,14 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {
+        "origin": "https://replit.com/"
+      },
+      "eas": {
+        "projectId": "c4d8dcdb-d3b0-43e2-baf8-4322c3dced8e"
+      }
     }
   }
 }

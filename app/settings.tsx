@@ -10,6 +10,7 @@ import {
   Alert,
   Linking,
   RefreshControl,
+  ActivityIndicator,
 } from 'react-native';
 import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -26,9 +27,10 @@ export default function SettingsScreen() {
   const topPad = Platform.OS === 'web' ? 67 : insets.top;
   const botPad = Platform.OS === 'web' ? 34 : insets.bottom;
 
+  const { employee, shopId: contextShopId, updateShopId } = useAuth();
   const [posId, setPosId] = useState<string>('');
   const [posSaved, setPosSaved] = useState(false);
-  const [shops, setShops] = useState<Array<{ id: string; name: string }>>([]);
+  const [shops, setShops] = useState<{ id: string; name: string }[]>([]);
 
   const [refreshing, setRefreshing] = useState(false);
   const refresh = async () => {
@@ -40,30 +42,24 @@ export default function SettingsScreen() {
   };
 
   useEffect(() => {
-    (async () => {
-      const { getPosId } = await import('@/lib/settings');
-      const id = await getPosId();
-      if (id) setPosId(id);
-      refresh();
-    })();
-  }, []);
+    if (contextShopId) setPosId(contextShopId);
+    refresh();
+  }, [contextShopId]);
 
   const handleSavePos = async (idToSave?: string) => {
     const trimmed = (idToSave ?? posId).trim();
     console.log('Settings: saving pos/shop id', trimmed);
-    const { setPosId } = await import('@/lib/settings');
     if (trimmed.length === 0) {
-      await setPosId(null);
+      await updateShopId(null);
       setPosId('');
     } else {
-      await setPosId(trimmed);
+      await updateShopId(trimmed);
       setPosId(trimmed);
     }
     setPosSaved(true);
     setTimeout(() => setPosSaved(false), 2500);
   };
 
-  const { employee } = useAuth();
   const isAdmin = employee?.role?.toLowerCase() === 'admin';
 
   return (
@@ -146,9 +142,11 @@ const COMMON_PRINTERS = [
 ];
 
 function BluetoothSection() {
-  const { connectedDevice, disconnect, connect } = useBluetooth();
+  const { connectedDevice, disconnect, connect, startScan, stopScan, scannedDevices, status, testPrint } = useBluetooth();
   const [printerName, setPrinterName] = useState('');
+  const [printerAddress, setPrinterAddress] = useState('');
   const [saved, setSaved] = useState(false);
+  const [testing, setTesting] = useState(false);
 
   const openSystemSettings = () => {
     if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -160,30 +158,43 @@ function BluetoothSection() {
       Linking.openURL('App-Prefs:Bluetooth').catch(() => {
         Alert.alert('Bluetooth', 'Open Settings → Bluetooth to pair your printer.');
       });
-    } else {
-      Alert.alert('Bluetooth Settings', 'Open your device Bluetooth settings to pair your printer, then enter its name below.');
+    }
+  };
+ 
+  const handleTestPrint = async () => {
+    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    setTesting(true);
+    try {
+      const success = await testPrint();
+      if (success) {
+        Alert.alert('Success', 'Test print sent successfully!');
+      } else {
+        Alert.alert('Error', 'Failed to send test print. Please check your printer connection.');
+      }
+    } catch (err) {
+      Alert.alert('Error', 'An unexpected error occurred during test print.');
+    } finally {
+      setTesting(false);
     }
   };
 
-  const handleSavePrinter = () => {
-    const name = printerName.trim();
-    if (!name) return;
-    connect({ id: name, name, address: 'Manual', rssi: -60 });
+  const handleManualConnect = () => {
+    if (!printerAddress.trim()) return;
+    connect({
+      id: printerAddress,
+      name: printerName || 'Manual Printer',
+      address: printerAddress,
+      rssi: -60
+    });
     setSaved(true);
+    setPrinterAddress('');
     setPrinterName('');
-    if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setTimeout(() => setSaved(false), 2500);
   };
 
-  const handleDisconnect = () => {
+  const handleSelectDevice = (device: any) => {
     if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    disconnect();
-  };
-
-  const handleSelectModel = (name: string) => {
-    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setPrinterName(name);
-    openSystemSettings();
+    connect(device);
   };
 
   return (
@@ -208,64 +219,115 @@ function BluetoothSection() {
               </View>
             </View>
           </View>
-          <Pressable onPress={handleDisconnect} style={styles.disconnectBtn}>
-            <Text style={styles.disconnectBtnText}>Remove</Text>
-          </Pressable>
+          <View style={styles.connectedActions}>
+            <Pressable onPress={handleTestPrint} style={styles.testBtn} disabled={testing}>
+              {testing ? <ActivityIndicator size="small" color={C.accent} /> : <Text style={styles.testBtnText}>Test Print</Text>}
+            </Pressable>
+            <Pressable onPress={disconnect} style={styles.disconnectBtn}>
+              <Text style={styles.disconnectBtnText}>Remove</Text>
+            </Pressable>
+          </View>
         </View>
       ) : (
         <View style={styles.notConnectedCard}>
           <MaterialCommunityIcons name="printer-off" size={32} color={C.textMuted} />
           <Text style={styles.notConnectedText}>No printer configured</Text>
-          <Text style={styles.notConnectedSub}>Pair via Android Bluetooth settings, then add the name below</Text>
+          <Text style={styles.notConnectedSub}>Pair via Android settings, then scan or add manually</Text>
         </View>
       )}
 
-      <Pressable onPress={openSystemSettings} style={styles.scanBtn}>
-        <MaterialCommunityIcons name="bluetooth-settings" size={20} color={C.accent} />
-        <Text style={styles.scanBtnText}>Open Bluetooth Settings</Text>
-      </Pressable>
+      <View style={{ flexDirection: 'row', gap: 10 }}>
+        <Pressable 
+          onPress={() => {
+            if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+            status === 'scanning' ? stopScan() : startScan();
+          }} 
+          style={[styles.scanBtn, { flex: 1 }]}
+        >
+          {status === 'scanning' ? <ActivityIndicator size="small" color={C.accent} /> : <Feather name="search" size={20} color={C.accent} />}
+          <Text style={styles.scanBtnText}>{status === 'scanning' ? 'Scanning...' : 'Scan for Printers'}</Text>
+        </Pressable>
+        <Pressable onPress={openSystemSettings} style={[styles.scanBtn, { paddingHorizontal: 16 }]}>
+          <MaterialCommunityIcons name="cog-outline" size={20} color={C.accent} />
+        </Pressable>
+      </View>
+
+      {status === 'bluetooth_off' && (
+        <View style={styles.errorBanner}>
+          <Ionicons name="bluetooth" size={16} color={C.danger} />
+          <Text style={styles.errorBannerText}>Bluetooth is turned off in system settings.</Text>
+          <Pressable onPress={openSystemSettings} style={styles.bannerAction}>
+            <Text style={styles.bannerActionText}>Enable</Text>
+          </Pressable>
+        </View>
+      )}
+
+      {status === 'location_off' && (
+        <View style={styles.errorBanner}>
+          <Ionicons name="location" size={16} color={C.danger} />
+          <Text style={styles.errorBannerText}>Location services must be enabled to scan.</Text>
+          <Pressable 
+            onPress={() => Linking.sendIntent('android.settings.LOCATION_SOURCE_SETTINGS').catch(() => {})} 
+            style={styles.bannerAction}
+          >
+            <Text style={styles.bannerActionText}>Enable</Text>
+          </Pressable>
+        </View>
+      )}
+
+      {(scannedDevices.length > 0 || status === 'scanning') && (
+        <View style={styles.deviceList}>
+          <Text style={styles.deviceListLabel}>Discovered Devices</Text>
+          {scannedDevices.map(device => (
+            <Pressable
+              key={device.id}
+              style={styles.deviceRow}
+              onPress={() => handleSelectDevice(device)}
+            >
+              <View style={styles.deviceIcon}>
+                <MaterialCommunityIcons name="printer-outline" size={22} color={C.accent} />
+              </View>
+              <View style={styles.deviceInfo}>
+                <Text style={styles.deviceName}>{device.name}</Text>
+                <Text style={styles.deviceAddress}>{device.address}</Text>
+              </View>
+              <View style={styles.deviceRight}>
+                <Text style={styles.pairBtnText}>Connect</Text>
+              </View>
+            </Pressable>
+          ))}
+          {scannedDevices.length === 0 && status === 'scanning' && (
+            <Text style={styles.emptyText}>Searching for physical printers...</Text>
+          )}
+        </View>
+      )}
 
       <View style={styles.manualEntry}>
-        <Text style={styles.manualEntryLabel}>Printer Name (after pairing)</Text>
+        <Text style={styles.manualEntryLabel}>Manual Connection (Fail-safe)</Text>
+        <TextInput
+          style={[styles.manualEntryInput, { marginBottom: 10 }]}
+          value={printerName}
+          onChangeText={setPrinterName}
+          placeholder="Printer Name (e.g. Epson)"
+          placeholderTextColor={C.textMuted}
+        />
         <View style={styles.manualEntryRow}>
           <TextInput
             style={styles.manualEntryInput}
-            value={printerName}
-            onChangeText={setPrinterName}
-            placeholder="e.g. Epson TM-T20III"
+            value={printerAddress}
+            onChangeText={setPrinterAddress}
+            placeholder="MAC Address (e.g. 00:11:22:33:AA:BB)"
             placeholderTextColor={C.textMuted}
+            autoCapitalize="characters"
           />
           <Pressable
-            onPress={handleSavePrinter}
-            style={[styles.manualSaveBtn, !printerName.trim() && styles.manualSaveBtnDisabled]}
-            disabled={!printerName.trim()}
+            onPress={handleManualConnect}
+            style={[styles.manualSaveBtn, !printerAddress.trim() && styles.manualSaveBtnDisabled]}
+            disabled={!printerAddress.trim()}
           >
-            <Text style={styles.manualSaveBtnText}>{saved ? 'Saved!' : 'Set'}</Text>
+            <Text style={styles.manualSaveBtnText}>{saved ? 'Connected!' : 'Link'}</Text>
           </Pressable>
         </View>
-      </View>
-
-      <View style={styles.deviceList}>
-        <Text style={styles.deviceListLabel}>Common Fiscal Printers</Text>
-        {COMMON_PRINTERS.map(printer => (
-          <Pressable
-            key={printer.id}
-            style={styles.deviceRow}
-            onPress={() => handleSelectModel(printer.name)}
-          >
-            <View style={styles.deviceIcon}>
-              <MaterialCommunityIcons name="printer-outline" size={22} color={C.textSecondary} />
-            </View>
-            <View style={styles.deviceInfo}>
-              <Text style={styles.deviceName}>{printer.name}</Text>
-              <Text style={styles.deviceAddress}>{printer.note}</Text>
-            </View>
-            <View style={styles.deviceRight}>
-              <Feather name="external-link" size={14} color={C.textMuted} />
-              <Text style={styles.pairBtnText}>Pair</Text>
-            </View>
-          </Pressable>
-        ))}
       </View>
     </View>
   );
@@ -431,6 +493,24 @@ const styles = StyleSheet.create({
     fontFamily: 'Inter_600SemiBold',
     fontSize: 13,
     color: C.danger,
+  },
+  connectedActions: {
+    flexDirection: 'row',
+    gap: 10,
+    alignItems: 'center',
+  },
+  testBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 10,
+    backgroundColor: C.accentDim,
+    borderWidth: 1,
+    borderColor: C.accent,
+  },
+  testBtnText: {
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 13,
+    color: C.accentLight,
   },
   notConnectedCard: {
     backgroundColor: C.card,
@@ -646,5 +726,40 @@ const styles = StyleSheet.create({
     fontFamily: 'Inter_400Regular',
     fontSize: 14,
     color: C.text,
+  },
+  emptyText: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 13,
+    color: C.textMuted,
+    textAlign: 'center',
+    marginTop: 10,
+  },
+  errorBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: C.dangerDim,
+    padding: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: C.danger,
+    gap: 8,
+    marginTop: 10,
+  },
+  errorBannerText: {
+    flex: 1,
+    fontFamily: 'Inter_500Medium',
+    fontSize: 12,
+    color: C.danger,
+  },
+  bannerAction: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    backgroundColor: C.danger,
+    borderRadius: 6,
+  },
+  bannerActionText: {
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 11,
+    color: '#fff',
   },
 });

@@ -1,6 +1,15 @@
 import NetInfo from '@react-native-community/netinfo';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { getPendingSales, markSaleSynced, getPendingActivityLogs, markActivityLogSynced } from './offlineDb';
+import { 
+  getPendingSales, 
+  markSaleSynced, 
+  getPendingActivityLogs, 
+  markActivityLogSynced,
+  saveEmployee,
+  clearEmployees,
+  getPendingAccessLogs,
+  markAccessLogSynced
+} from './offlineDb';
 import { supabase } from './supabase';
 import { getPosId } from './settings';
 
@@ -14,10 +23,14 @@ export function initSync() {
     if (state.isConnected) {
       syncSalesQueue();
       syncActivityLogsQueue();
+      syncEmployees();
+      syncAccessLogsQueue();
     }
   });
   syncSalesQueue();
   syncActivityLogsQueue();
+  syncEmployees();
+  syncAccessLogsQueue();
 }
 
 export async function syncSalesQueue() {
@@ -42,11 +55,15 @@ export async function syncSalesQueue() {
     for (const rec of pending) {
       try {
         if (!supabase) throw new Error('Supabase not configured');
-        if (posId) {
-          // call POS sale RPC; backend will subtract inventory for the
-          // specified shop_id.  we pass order identifier too for logging.
-          await supabase.rpc('handle_pos_sale', {
-            p_shop_id: posId,
+        
+        // Use the shopId captured at the time of sale if available, 
+        // fallback to current posId from settings.
+        const saleShopId = rec.data.shopId || rec.data.shop_id || posId;
+
+        if (saleShopId) {
+          // call POS sale RPC
+          const { error } = await supabase.rpc('handle_pos_sale', {
+            p_shop_id: saleShopId,
             p_items: rec.data.items,
             p_order_id: rec.data.orderId || rec.data.order_id,
             p_total_amount: rec.data.total || rec.data.amount || 0,
@@ -54,10 +71,15 @@ export async function syncSalesQueue() {
             p_employee_id: empId,
             p_customer_name: rec.data.customerName || null,
           });
+
+          if (error) throw error;
+          
+          // ONLY mark as synced if the RPC call was successful
+          await markSaleSynced(rec.id);
         } else {
-          console.warn('syncSalesQueue: no shop_id, skipping handle_pos_sale');
+          console.warn('syncSalesQueue: No shop_id found for sale', rec.id, '. Keeping in queue.');
+          // We do NOT mark as synced here so it stays in the queue until a shop_id is available.
         }
-        await markSaleSynced(rec.id);
       } catch (err) {
         console.warn('Failed to sync sale', rec.id, err);
         // we leave it pending for next attempt
@@ -103,6 +125,74 @@ export async function syncActivityLogsQueue() {
   } catch (e) {
     console.warn('sync activity queue failed', e);
   } finally {
-    activitySyncing = false;
+      activitySyncing = false;
+  }
+}
+
+let employeesSyncing = false;
+
+export async function syncEmployees() {
+  if (employeesSyncing) return;
+  if (!supabase) return;
+  
+  employeesSyncing = true;
+  try {
+    console.log('[Sync] Syncing employees...');
+    const { data, error } = await supabase
+      .from('employees')
+      .select('employee_id, first_name, last_name, role, shop, pin, status')
+      .eq('status', 'active');
+
+    if (error) throw error;
+
+    if (data && data.length > 0) {
+      // For simplicity, we clear and repopulate. 
+      // In a larger system, we might do incremental updates.
+      await clearEmployees();
+      for (const emp of data) {
+        await saveEmployee(emp);
+      }
+      console.log(`[Sync] Successfully synced ${data.length} employees.`);
+    }
+  } catch (err) {
+    console.warn('[Sync] Failed to sync employees:', err);
+  } finally {
+    employeesSyncing = false;
+  }
+}
+
+let accessLogSyncing = false;
+
+export async function syncAccessLogsQueue() {
+  if (accessLogSyncing) return;
+  if (!supabase) return;
+
+  accessLogSyncing = true;
+  try {
+    const pending = await getPendingAccessLogs();
+    if (pending.length === 0) return;
+
+    console.log(`[Sync] Syncing ${pending.length} access logs...`);
+    for (const rec of pending) {
+      try {
+        const { error } = await supabase
+          .from('access_logs')
+          .insert({
+            employee_id: rec.employee_id,
+            shop_id: rec.shop_id,
+            login_time: rec.login_time,
+            logout_time: rec.logout_time
+          });
+
+        if (error) throw error;
+        await markAccessLogSynced(rec.id);
+      } catch (err) {
+        console.warn('Failed to sync access log', rec.id, err);
+      }
+    }
+  } catch (err) {
+    console.warn('[Sync] Access log sync failed:', err);
+  } finally {
+    accessLogSyncing = false;
   }
 }
