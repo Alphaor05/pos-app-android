@@ -14,7 +14,7 @@ export interface BluetoothDevice {
   rssi: number;
 }
 
-type ConnectionStatus = 'disconnected' | 'scanning' | 'connecting' | 'connected';
+type ConnectionStatus = 'disconnected' | 'scanning' | 'connecting' | 'connected' | 'bluetooth_off' | 'location_off';
 
 export interface ReceiptData {
   orderId: string;
@@ -161,9 +161,9 @@ export function BluetoothProvider({ children }: { children: ReactNode }) {
       // provide more context in status if possible
       const msg = error?.message || '';
       if (msg.includes('Bluetooth') && msg.includes('off')) {
-        setStatus('bluetooth_off' as any);
+        setStatus('bluetooth_off');
       } else if (msg.includes('Location') || msg.includes('permission')) {
-        setStatus('location_off' as any);
+        setStatus('location_off');
       } else {
         setStatus('disconnected');
       }

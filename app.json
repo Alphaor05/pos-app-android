@@ -7,10 +7,15 @@
     "icon": "./assets/images/CrunchNumIcon.png",
     "scheme": "crunch-num",
     "userInterfaceStyle": "dark",
-    "newArchEnabled": true,
+    "newArchEnabled": false,
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.crunch-num"
+    },
+    "splash": {
+      "image": "./assets/images/CrunchNumIcon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0D1117"
     },
     "android": {
       "package": "com.alphaor05.crunchnum",
@@ -39,7 +44,8 @@
         }
       ],
       "expo-font",
-      "expo-web-browser"
+      "expo-web-browser",
+      "expo-image"
     ],
     "experiments": {
       "typedRoutes": true,

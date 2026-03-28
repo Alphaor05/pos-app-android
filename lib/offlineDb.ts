@@ -30,6 +30,7 @@ export interface ProductRecord {
   price: number;
   category?: string;
   image_url?: string;
+  in_stock?: number;
 }
 
 export interface DiscountPlanRecord {
@@ -115,8 +116,8 @@ export function addProduct(p: ProductRecord): Promise<void> {
   return new Promise((resolve, reject) => {
     try {
       localDb.runSync(
-        `INSERT OR REPLACE INTO products (id, name, price, category, image_url) VALUES (?, ?, ?, ?, ?);`,
-        [p.id, p.name, p.price, p.category || null, p.image_url || null]
+        `INSERT OR REPLACE INTO products (id, name, price, category, image_url, in_stock) VALUES (?, ?, ?, ?, ?, ?);`,
+        [p.id, p.name, p.price, p.category || null, p.image_url || null, p.in_stock ?? 9999]
       );
       resolve();
     } catch (err) {
@@ -151,9 +152,21 @@ export function initDb() {
         name TEXT,
         price REAL,
         category TEXT,
-        image_url TEXT
+        image_url TEXT,
+        in_stock INTEGER DEFAULT 9999
       );
     `);
+
+    // Migration: add in_stock column to existing databases
+    try {
+      const productTableInfo = localDb.getAllSync(`PRAGMA table_info(products);`);
+      const hasInStock = productTableInfo.some((c: any) => c.name === 'in_stock');
+      if (!hasInStock) {
+        localDb.execSync(`ALTER TABLE products ADD COLUMN in_stock INTEGER DEFAULT 9999;`);
+      }
+    } catch (e) {
+      console.warn('Migration for products.in_stock failed:', e);
+    }
 
     localDb.execSync(`
       CREATE TABLE IF NOT EXISTS store_inventory (

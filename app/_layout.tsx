@@ -18,6 +18,9 @@ import {
 } from "@expo-google-fonts/inter";
 import { initDb } from '@/lib/offlineDb';
 import { initSync } from '@/lib/sync';
+import * as SplashScreen from 'expo-splash-screen';
+
+SplashScreen.preventAutoHideAsync();
 
 function RootLayoutNav() {
   const { isAuthenticated, isLoading } = useAuth();
@@ -71,6 +74,12 @@ export default function RootLayout() {
     }
     prepare();
   }, []);
+
+  useEffect(() => {
+    if (fontsLoaded && appIsReady) {
+      SplashScreen.hideAsync();
+    }
+  }, [fontsLoaded, appIsReady]);
 
   if (!fontsLoaded || !appIsReady) return null;
 

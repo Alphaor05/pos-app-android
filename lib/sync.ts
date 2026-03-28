@@ -62,7 +62,8 @@ export async function syncSalesQueue() {
 
         if (saleShopId) {
           // call POS sale RPC
-          const { error } = await supabase.rpc('handle_pos_sale', {
+          const { handlePosSale, insertTransactionReceipt } = await import('@/lib/supabase');
+          const { error } = await handlePosSale({
             p_shop_id: saleShopId,
             p_items: rec.data.items,
             p_order_id: rec.data.orderId || rec.data.order_id,
@@ -72,10 +73,30 @@ export async function syncSalesQueue() {
             p_customer_name: rec.data.customerName || null,
           });
 
-          if (error) throw error;
-          
-          // ONLY mark as synced if the RPC call was successful
-          await markSaleSynced(rec.id);
+          if (error) {
+            console.warn('syncSalesQueue: handle_pos_sale RPC failed', rec.id, error);
+            const receiptFallback = {
+              order_id: rec.data.orderId || rec.data.order_id,
+              shop_id: saleShopId,
+              items: JSON.stringify(rec.data.items),
+              subtotal: rec.data.subtotal || rec.data.total || 0,
+              discount: rec.data.discount || 0,
+              tax: rec.data.tax || 0,
+              total: rec.data.total || rec.data.amount || 0,
+              payment_method: rec.data.paymentMethod || rec.data.payment_method || 'Cash',
+              employee_id: empId,
+              customer_name: rec.data.customerName || null,
+              created_at: rec.data.createdAt || new Date().toISOString(),
+            };
+            const { error: fallbackError } = await insertTransactionReceipt(receiptFallback);
+            if (fallbackError) {
+              console.error('syncSalesQueue: fallback transaction_receipts insert failed', rec.id, fallbackError);
+            } else {
+              await markSaleSynced(rec.id);
+            }
+          } else {
+            await markSaleSynced(rec.id);
+          }
         } else {
           console.warn('syncSalesQueue: No shop_id found for sale', rec.id, '. Keeping in queue.');
           // We do NOT mark as synced here so it stays in the queue until a shop_id is available.

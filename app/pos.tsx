@@ -53,6 +53,7 @@ async function fetchProductsFromSupabase(shopId: string | null): Promise<Product
         price: p.price,
         category: p.category || '',
         image_url: p.image_url || '',
+        inStock: p.in_stock ?? 9999,
       }));
     } catch (e) {
       console.warn('offlineDb error:', e);
@@ -76,6 +77,7 @@ async function fetchProductsFromSupabase(shopId: string | null): Promise<Product
         price: p.price,
         category: p.category || '',
         image_url: p.image_url || '',
+        inStock: p.in_stock ?? 9999,
       }));
     } catch (err) {
       console.warn('offlineDb error:', err);
@@ -92,6 +94,8 @@ async function fetchProductsFromSupabase(shopId: string | null): Promise<Product
       category: p.category,
       image_url: p.image_url,
       sku: p.code || p.sku,
+      // If no stock record exists for this shop, treat as 0 (not stocked here yet).
+      // The offline fallback separately defaults to 9999 to keep cached products usable.
       inStock: shopData ? Number(shopData.in_stock ?? 0) : 0,
     };
   });
@@ -101,7 +105,7 @@ async function fetchProductsFromSupabase(shopId: string | null): Promise<Product
     const { clearProducts, addProduct } = await import('@/lib/offlineDb');
     await clearProducts();
     for (const p of merged) {
-      await addProduct(p as any);
+      await addProduct({ ...p as any, in_stock: (p as any).inStock ?? 9999 });
     }
   } catch (e) {
     console.warn('Sync products error:', e);
@@ -509,7 +513,7 @@ export default function POSScreen() {
   }, []);
 
   useEffect(() => {
-    if (paymentMethods.length > 0 && !paymentMethods.find(m => m.payment_type_name === selectedPaymentMethod)) {
+    if (paymentMethods.length > 0 && !paymentMethods.find((m: any) => m.payment_type_name === selectedPaymentMethod)) {
       setSelectedPaymentMethod(paymentMethods[0].payment_type_name);
     }
   }, [paymentMethods, selectedPaymentMethod]);
@@ -531,34 +535,6 @@ export default function POSScreen() {
     refreshPending();
   }, [refreshPending]);
 
-  useEffect(() => {
-    if (!supabase) return;
-    const channel = supabase
-      .channel('receipt_printer')
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'transaction_receipts' },
-        async (payload: any) => {
-          try {
-            const row = payload.new as Record<string, any>;
-            await printReceipt({
-              orderId: row.order_id ?? row.id,
-              items: Array.isArray(row.items) ? row.items : [],
-              subtotal: Number(row.subtotal ?? 0),
-              discount: Number(row.discount ?? 0),
-              tax: Number(row.tax ?? 0),
-              total: Number(row.total ?? 0),
-              createdAt: row.created_at ?? new Date().toISOString(),
-              settings: parsedSettings
-            });
-          } catch (e) { 
-            console.warn('Realtime print error:', e);
-          }
-        }
-      )
-      .subscribe();
-    return () => { if (supabase) supabase.removeChannel(channel); };
-  }, [parsedSettings, printReceipt]);
 
   useEffect(() => {
     if (!supabase) return;
@@ -651,7 +627,8 @@ export default function POSScreen() {
 
     if (supabase && shopId) {
       try {
-        await supabase.rpc('handle_pos_sale', {
+        const { handlePosSale, insertTransactionReceipt } = await import('@/lib/supabase');
+        const { error } = await handlePosSale({
           p_shop_id: shopId,
           p_items: receiptItems,
           p_order_id: orderId,
@@ -660,8 +637,31 @@ export default function POSScreen() {
           p_employee_id: employee?.employee_id ?? null,
           p_customer_name: customerName.trim() || null,
         });
+
+        if (error) {
+          console.warn('pos_sale RPC error (from handlePosSale)', error);
+          // fallback: insert record to transaction_receipts table directly
+          const receiptFallback = {
+            order_id: orderId,
+            shop_id: shopId,
+            items: JSON.stringify(receiptItems),
+            subtotal: total,
+            discount: totalDiscountInclAuto,
+            tax: 0,
+            total: grandTotal,
+            payment_method: selectedPaymentMethod,
+            employee_id: employee?.employee_id || null,
+            customer_name: customerName.trim() || null,
+            created_at: new Date().toISOString(),
+          };
+
+          const { error: fallbackError } = await insertTransactionReceipt(receiptFallback);
+          if (fallbackError) {
+            console.error('Fallback transaction_receipts insert failed', fallbackError);
+          }
+        }
       } catch (e) {
-        console.warn('pos_sale RPC error', e);
+        console.warn('pos_sale RPC handling exception', e);
       }
     }
 
