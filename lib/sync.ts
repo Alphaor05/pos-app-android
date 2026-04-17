@@ -6,6 +6,7 @@ import {
   getPendingActivityLogs, 
   markActivityLogSynced,
   saveEmployee,
+  bulkSaveEmployees,
   clearEmployees,
   getPendingAccessLogs,
   markAccessLogSynced
@@ -167,12 +168,9 @@ export async function syncEmployees() {
     if (error) throw error;
 
     if (data && data.length > 0) {
-      // For simplicity, we clear and repopulate. 
-      // In a larger system, we might do incremental updates.
+      // Use bulk save for better performance
       await clearEmployees();
-      for (const emp of data) {
-        await saveEmployee(emp);
-      }
+      await bulkSaveEmployees(data);
       console.log(`[Sync] Successfully synced ${data.length} employees.`);
     }
   } catch (err) {

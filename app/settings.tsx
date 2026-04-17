@@ -215,7 +215,7 @@ function BluetoothSection() {
               <Text style={styles.connectedAddress}>{connectedDevice.address}</Text>
               <View style={styles.connectedBadge}>
                 <View style={styles.connectedDot} />
-                <Text style={styles.connectedBadgeText}>Active</Text>
+                <Text style={styles.connectedBadgeText}>Successful Connection</Text>
               </View>
             </View>
           </View>
@@ -229,11 +229,44 @@ function BluetoothSection() {
           </View>
         </View>
       ) : (
-        <View style={styles.notConnectedCard}>
-          <MaterialCommunityIcons name="printer-off" size={32} color={C.textMuted} />
-          <Text style={styles.notConnectedText}>No printer configured</Text>
-          <Text style={styles.notConnectedSub}>Pair via Android settings, then scan or add manually</Text>
-        </View>
+        <Pressable 
+          onPress={() => {
+            if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+            connect({
+              id: '86:67:7A:3B:87:CE',
+              name: 'BT-583',
+              address: '86:67:7A:3B:87:CE',
+              rssi: -50
+            });
+          }}
+          style={({ pressed }) => [
+            styles.quickConnectCard,
+            pressed && styles.quickConnectCardPressed
+          ]}
+        >
+          <View style={styles.quickConnectIcon}>
+            {status === 'connecting' ? (
+              <ActivityIndicator color={C.accent} size="large" />
+            ) : (
+              <MaterialCommunityIcons name="bluetooth-connect" size={32} color={C.accent} />
+            )}
+          </View>
+          <View style={styles.quickConnectInfo}>
+            <Text style={styles.quickConnectTitle}>Standard Thermal Printer</Text>
+            <Text style={styles.quickConnectSub}>Model: BT-583 (86:67:7A:3B:87:CE)</Text>
+            <Text style={[
+              styles.quickConnectAction,
+              status === 'bluetooth_off' && { color: C.danger },
+              status === 'location_off' && { color: C.warning }
+            ]}>
+              {status === 'connecting' ? 'Verifying Hardware...' : 
+               status === 'bluetooth_off' ? 'Bluetooth Unavailable' :
+               status === 'location_off' ? 'Location Required' :
+               'Click to Auto-Link Printer'}
+            </Text>
+          </View>
+          <MaterialCommunityIcons name="chevron-right" size={24} color={C.accent} style={{ opacity: 0.5 }} />
+        </Pressable>
       )}
 
       <View style={{ flexDirection: 'row', gap: 10 }}>
@@ -366,7 +399,7 @@ function AboutSection() {
         </View>
         <View style={styles.aboutRow}>
           <Text style={styles.aboutLabel}>Version</Text>
-          <Text style={styles.aboutValue}>1.0.0</Text>
+          <Text style={styles.aboutValue}>1.4.0</Text>
         </View>
         <View style={styles.aboutRow}>
           <Text style={styles.aboutLabel}>Platform</Text>
@@ -664,6 +697,52 @@ const styles = StyleSheet.create({
     fontFamily: 'Inter_500Medium',
     fontSize: 12,
     color: C.success,
+  },
+  quickConnectCard: {
+    backgroundColor: C.card,
+    borderRadius: 16,
+    padding: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+    borderWidth: 1.5,
+    borderColor: C.border,
+    borderStyle: 'dashed',
+  },
+  quickConnectCardPressed: {
+    backgroundColor: C.surface,
+    borderColor: C.accent,
+    transform: [{ scale: 0.98 }],
+  },
+  quickConnectIcon: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: C.accentDim,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: C.accent,
+  },
+  quickConnectInfo: {
+    flex: 1,
+    gap: 2,
+  },
+  quickConnectTitle: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 16,
+    color: C.text,
+  },
+  quickConnectSub: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 12,
+    color: C.textMuted,
+  },
+  quickConnectAction: {
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 13,
+    color: C.accent,
+    marginTop: 4,
   },
   pinInfoCard: {
     backgroundColor: C.card,

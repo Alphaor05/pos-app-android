@@ -188,7 +188,25 @@ export function BluetoothProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      // Ensure the stored address is just the MAC address
+      // 1. HARDWARE VERIFICATION (New)
+      const { NativeModules } = require('react-native');
+      if (NativeModules.PrinterModule?.verifyHardware) {
+        const result = await NativeModules.PrinterModule.verifyHardware(device.address);
+        
+        if (result === 'NO_BLUETOOTH') {
+          Alert.alert('Bluetooth Required', 'Your device does not have Bluetooth hardware or it is disabled.');
+          setStatus('bluetooth_off');
+          return;
+        }
+        
+        if (result === 'UNREACHABLE') {
+          Alert.alert('Printer Unreachable', 'Could not establish a connection to the printer. Please ensure it is turned on and paired in Android settings.');
+          setStatus('disconnected');
+          return;
+        }
+      }
+
+      // 2. PROCEED ONLY ON SUCCESS
       const cleanAddress = device.address.replace(/^BT:|^TCP:|^USB:/, '');
       const cleanDevice = { ...device, address: cleanAddress };
 

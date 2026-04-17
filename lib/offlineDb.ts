@@ -92,52 +92,69 @@ const WEB_SAMPLE_PRODUCTS: ProductRecord[] = [
   { id: '3', name: 'Coca Cola 330ml', price: 2.5, category: 'Beverages' },
 ];
 
-export function getProducts(): Promise<ProductRecord[]> {
+export async function getProducts(): Promise<ProductRecord[]> {
   if (Platform.OS === 'web') {
-    // return sample list for web since sqlite not available
     return Promise.resolve(WEB_SAMPLE_PRODUCTS);
   }
   const localDb = getDb();
-  if (!localDb) return Promise.resolve([]);
-  return new Promise((resolve) => {
-    try {
-      const rows = localDb.getAllSync(`SELECT * FROM products ORDER BY name ASC;`);
-      resolve(rows);
-    } catch (e) {
-      resolve([]);
-    }
-  });
+  if (!localDb) return [];
+  try {
+    const rows = await localDb.getAllAsync(`SELECT * FROM products ORDER BY name ASC;`);
+    return rows as ProductRecord[];
+  } catch (e) {
+    console.warn('[OfflineDB] getProducts error:', e);
+    return [];
+  }
 }
 
-export function addProduct(p: ProductRecord): Promise<void> {
-  if (Platform.OS === 'web') return Promise.resolve();
+export async function addProduct(p: ProductRecord): Promise<void> {
+  if (Platform.OS === 'web') return;
   const localDb = getDb();
-  if (!localDb) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    try {
-      localDb.runSync(
-        `INSERT OR REPLACE INTO products (id, name, price, category, image_url, in_stock) VALUES (?, ?, ?, ?, ?, ?);`,
-        [p.id, p.name, p.price, p.category || null, p.image_url || null, p.in_stock ?? 9999]
-      );
-      resolve();
-    } catch (err) {
-      reject(err);
-    }
-  });
+  if (!localDb) return;
+  try {
+    await localDb.runAsync(
+      `INSERT OR REPLACE INTO products (id, name, price, category, image_url, in_stock) VALUES (?, ?, ?, ?, ?, ?);`,
+      [p.id, p.name, p.price, p.category || null, p.image_url || null, p.in_stock ?? 9999]
+    );
+  } catch (err) {
+    console.error('[OfflineDB] addProduct error:', err);
+    throw err;
+  }
 }
 
-export function clearProducts(): Promise<void> {
-  if (Platform.OS === 'web') return Promise.resolve();
+/**
+ * Bulk insert products within a single transaction for maximum performance.
+ */
+export async function bulkAddProducts(products: ProductRecord[]): Promise<void> {
+  if (Platform.OS === 'web' || products.length === 0) return;
   const localDb = getDb();
-  if (!localDb) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    try {
-      localDb.runSync(`DELETE FROM products;`);
-      resolve();
-    } catch (err) {
-      reject(err);
-    }
-  });
+  if (!localDb) return;
+
+  try {
+    await localDb.withTransactionAsync(async () => {
+      for (const p of products) {
+        await localDb.runAsync(
+          `INSERT OR REPLACE INTO products (id, name, price, category, image_url, in_stock) VALUES (?, ?, ?, ?, ?, ?);`,
+          [p.id, p.name, p.price, p.category || null, p.image_url || null, p.in_stock ?? 9999]
+        );
+      }
+    });
+  } catch (err) {
+    console.error('[OfflineDB] bulkAddProducts error:', err);
+    throw err;
+  }
+}
+
+export async function clearProducts(): Promise<void> {
+  if (Platform.OS === 'web') return;
+  const localDb = getDb();
+  if (!localDb) return;
+  try {
+    await localDb.runAsync(`DELETE FROM products;`);
+  } catch (err) {
+    console.error('[OfflineDB] clearProducts error:', err);
+    throw err;
+  }
 }
 
 export function initDb() {
@@ -293,16 +310,18 @@ export function initDb() {
 
     // seed a couple items if products table is empty
     const countRow = localDb.getFirstSync(`SELECT COUNT(*) as c FROM products;`);
-    if (countRow && countRow.c === 0) {
+    if (countRow && (countRow as any).c === 0) {
       const samples = [
         { id: '1', name: 'Bread White', price: 1.2, category: 'Bakery' },
         { id: '2', name: 'Butter 250g', price: 6.0, category: 'Dairy' },
       ];
-      samples.forEach(p => {
-        localDb.runSync(
-          `INSERT INTO products (id, name, price, category) VALUES (?, ?, ?, ?);`,
-          [p.id, p.name, p.price, p.category]
-        );
+      localDb.withTransactionSync(() => {
+        samples.forEach(p => {
+          localDb.runSync(
+            `INSERT INTO products (id, name, price, category) VALUES (?, ?, ?, ?);`,
+            [p.id, p.name, p.price, p.category]
+          );
+        });
       });
     }
   } catch (e) {
@@ -311,415 +330,444 @@ export function initDb() {
 }
 
 
-export function queueSale(sale: any): Promise<void> {
+export async function queueSale(sale: any): Promise<void> {
   if (Platform.OS === 'web') {
-    return new Promise((resolve) => {
-      const id = sale.orderId || Date.now().toString() + Math.random().toString(36).substr(2, 6);
-      const rec: SaleRecord = {
-        id,
-        data: sale,
-        synced: false,
-        created_at: new Date().toISOString(),
-      };
-      webQueue.push(rec);
-      resolve();
+    const id = sale.orderId || Date.now().toString() + Math.random().toString(36).substr(2, 6);
+    const rec: SaleRecord = {
+      id,
+      data: sale,
+      synced: false,
+      created_at: new Date().toISOString(),
+    };
+    webQueue.push(rec);
+    return;
+  }
+
+  const localDb = getDb();
+  if (!localDb) return;
+
+  try {
+    const id = sale.orderId || Date.now().toString() + Math.random().toString(36).substr(2, 6);
+    const dataStr = JSON.stringify(sale);
+    const created = new Date().toISOString();
+    await localDb.runAsync(
+      `INSERT INTO sales_queue (id, data, synced, created_at) VALUES (?, ?, ?, ?);`,
+      [id, dataStr, 0, created]
+    );
+    console.log(`[OfflineDB] Sale ${id} queued successfully for sync.`);
+  } catch (err) {
+    console.error(`[OfflineDB] Failed to queue sale ${sale?.orderId}:`, err);
+    throw err;
+  }
+}
+
+export async function getPendingSales(): Promise<SaleRecord[]> {
+  if (Platform.OS === 'web') {
+    return webQueue.filter(r => !r.synced);
+  }
+
+  const localDb = getDb();
+  if (!localDb) return [];
+
+  try {
+    const rows = await localDb.getAllAsync(`SELECT * FROM sales_queue WHERE synced = 0;`);
+    return rows.map((r: any) => ({
+      id: r.id,
+      data: typeof r.data === 'string' ? JSON.parse(r.data) : r.data,
+      synced: r.synced === 1,
+      created_at: r.created_at,
+    }));
+  } catch (err) {
+    console.error('[OfflineDB] getPendingSales error:', err);
+    return [];
+  }
+}
+
+export async function getAllSales(): Promise<SaleRecord[]> {
+  if (Platform.OS === 'web') {
+    return [...webQueue].sort((a, b) => b.created_at.localeCompare(a.created_at));
+  }
+
+  const localDb = getDb();
+  if (!localDb) return [];
+
+  try {
+    const rows = await localDb.getAllAsync(`SELECT * FROM sales_queue ORDER BY created_at DESC;`);
+    return rows.map((r: any) => ({
+      id: r.id,
+      data: typeof r.data === 'string' ? JSON.parse(r.data) : r.data,
+      synced: r.synced === 1,
+      created_at: r.created_at,
+    }));
+  } catch (err) {
+    console.error('[OfflineDB] getAllSales error:', err);
+    return [];
+  }
+}
+
+export async function markSaleSynced(id: string): Promise<void> {
+  if (Platform.OS === 'web') {
+    const rec = webQueue.find(r => r.id === id);
+    if (rec) rec.synced = true;
+    return;
+  }
+
+  const localDb = getDb();
+  if (!localDb) return;
+
+  try {
+    await localDb.runAsync(
+      `UPDATE sales_queue SET synced = 1 WHERE id = ?;`,
+      [id]
+    );
+  } catch (err) {
+    console.error('[OfflineDB] markSaleSynced error:', err);
+    throw err;
+  }
+}
+
+export async function queueActivityLog(log: any): Promise<void> {
+  if (Platform.OS === 'web') return;
+  const localDb = getDb();
+  if (!localDb) return;
+
+  try {
+    const id = Date.now().toString() + Math.random().toString(36).substr(2, 6);
+    const dataStr = JSON.stringify(log);
+    const created = new Date().toISOString();
+    await localDb.runAsync(
+      `INSERT INTO activity_logs_queue (id, data, synced, created_at) VALUES (?, ?, ?, ?);`,
+      [id, dataStr, 0, created]
+    );
+  } catch (err) {
+    console.error('[OfflineDB] queueActivityLog error:', err);
+    throw err;
+  }
+}
+
+export async function getPendingActivityLogs(): Promise<SaleRecord[]> {
+  if (Platform.OS === 'web') return [];
+  const localDb = getDb();
+  if (!localDb) return [];
+
+  try {
+    const rows = await localDb.getAllAsync(`SELECT * FROM activity_logs_queue WHERE synced = 0;`);
+    return rows.map((r: any) => ({
+      id: r.id,
+      data: typeof r.data === 'string' ? JSON.parse(r.data) : r.data,
+      synced: r.synced === 1,
+      created_at: r.created_at,
+    }));
+  } catch (err) {
+    console.error('[OfflineDB] getPendingActivityLogs error:', err);
+    return [];
+  }
+}
+
+export async function markActivityLogSynced(id: string): Promise<void> {
+  if (Platform.OS === 'web') return;
+  const localDb = getDb();
+  if (!localDb) return;
+
+  try {
+    await localDb.runAsync(
+      `UPDATE activity_logs_queue SET synced = 1 WHERE id = ?;`,
+      [id]
+    );
+  } catch (err) {
+    console.error('[OfflineDB] markActivityLogSynced error:', err);
+    throw err;
+  }
+}
+
+export async function saveDiscountPlan(p: DiscountPlanRecord & { shop_id: string }): Promise<void> {
+  if (Platform.OS === 'web') return;
+  const localDb = getDb();
+  if (!localDb) return;
+  try {
+    await localDb.runAsync(
+      `INSERT OR REPLACE INTO discount_plans (id, name, discount_type, discount_value, applicable_to, target_id, target_name, status, start_date, end_date, shop_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+      [p.id, p.name, p.discount_type, p.discount_value, p.applicable_to, p.target_id || null, p.target_name || null, p.status, p.start_date, p.end_date, p.shop_id]
+    );
+  } catch (err) {
+    console.error('[OfflineDB] saveDiscountPlan error:', err);
+    throw err;
+  }
+}
+
+export async function bulkSaveDiscountPlans(plans: (DiscountPlanRecord & { shop_id: string })[]): Promise<void> {
+  if (Platform.OS === 'web' || plans.length === 0) return;
+  const localDb = getDb();
+  if (!localDb) return;
+
+  try {
+    await localDb.withTransactionAsync(async () => {
+      for (const p of plans) {
+        await localDb.runAsync(
+          `INSERT OR REPLACE INTO discount_plans (id, name, discount_type, discount_value, applicable_to, target_id, target_name, status, start_date, end_date, shop_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+          [p.id, p.name, p.discount_type, p.discount_value, p.applicable_to, p.target_id || null, p.target_name || null, p.status, p.start_date, p.end_date, p.shop_id]
+        );
+      }
     });
+  } catch (err) {
+    console.error('[OfflineDB] bulkSaveDiscountPlans error:', err);
+    throw err;
   }
-
-  return new Promise((resolve, reject) => {
-    try {
-      const id = sale.orderId || Date.now().toString() + Math.random().toString(36).substr(2, 6);
-      const dataStr = JSON.stringify(sale);
-      const created = new Date().toISOString();
-      db.runSync(
-        `INSERT INTO sales_queue (id, data, synced, created_at) VALUES (?, ?, ?, ?);`,
-        [id, dataStr, 0, created]
-      );
-      console.log(`[OfflineDB] Sale ${id} queued successfully for sync.`);
-      resolve();
-    } catch (err) {
-      console.error(`[OfflineDB] Failed to queue sale ${sale?.orderId}:`, err);
-      reject(err);
-    }
-  });
 }
 
-export function getPendingSales(): Promise<SaleRecord[]> {
-  if (Platform.OS === 'web') {
-    return Promise.resolve(webQueue.filter(r => !r.synced));
+export async function clearDiscountPlans(): Promise<void> {
+  if (Platform.OS === 'web') return;
+  const localDb = getDb();
+  if (!localDb) return;
+  try {
+    await localDb.runAsync(`DELETE FROM discount_plans;`);
+  } catch (err) {
+    console.error('[OfflineDB] clearDiscountPlans error:', err);
+    throw err;
   }
-
-  return new Promise((resolve, reject) => {
-    try {
-      const rows = db.getAllSync(`SELECT * FROM sales_queue WHERE synced = 0;`);
-      const arr: SaleRecord[] = rows.map((r: any) => ({
-        id: r.id,
-        data: typeof r.data === 'string' ? JSON.parse(r.data) : r.data,
-        synced: r.synced === 1,
-        created_at: r.created_at,
-      }));
-      resolve(arr);
-    } catch (err) {
-      reject(err);
-    }
-  });
 }
 
-export function getAllSales(): Promise<SaleRecord[]> {
-  if (Platform.OS === 'web') {
-    return Promise.resolve([...webQueue].sort((a, b) => b.created_at.localeCompare(a.created_at)));
-  }
-
-  return new Promise((resolve, reject) => {
-    try {
-      const rows = db.getAllSync(`SELECT * FROM sales_queue ORDER BY created_at DESC;`);
-      const arr: SaleRecord[] = rows.map((r: any) => ({
-        id: r.id,
-        data: typeof r.data === 'string' ? JSON.parse(r.data) : r.data,
-        synced: r.synced === 1,
-        created_at: r.created_at,
-      }));
-      resolve(arr);
-    } catch (err) {
-      reject(err);
+export async function getDiscountPlans(shopId?: string | null): Promise<DiscountPlanRecord[]> {
+  if (Platform.OS === 'web') return [];
+  const localDb = getDb();
+  if (!localDb) return [];
+  try {
+    let query = `SELECT * FROM discount_plans WHERE status = 'active'`;
+    const params: any[] = [];
+    if (shopId) {
+      query += ` AND shop_id = ?`;
+      params.push(shopId);
     }
-  });
+    const rows = await localDb.getAllAsync(query, params);
+    return rows as DiscountPlanRecord[];
+  } catch (e) {
+    console.warn('[OfflineDB] getDiscountPlans error:', e);
+    return [];
+  }
 }
 
-export function markSaleSynced(id: string): Promise<void> {
-  if (Platform.OS === 'web') {
-    return new Promise((resolve) => {
-      const rec = webQueue.find(r => r.id === id);
-      if (rec) rec.synced = true;
-      resolve();
+export async function savePricingPlan(p: PricingPlanRecord & { shop_id: string }): Promise<void> {
+  if (Platform.OS === 'web') return;
+  const localDb = getDb();
+  if (!localDb) return;
+  try {
+    await localDb.runAsync(
+      `INSERT OR REPLACE INTO pricing_plans (id, name, description, price_multiplier, applicable_to, target_id, target_name, status, start_date, end_date, shop_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+      [p.id, p.name, p.description || null, p.price_multiplier, p.applicable_to, p.target_id || null, p.target_name || null, p.status, p.start_date, p.end_date, p.shop_id]
+    );
+  } catch (err) {
+    console.error('[OfflineDB] savePricingPlan error:', err);
+    throw err;
+  }
+}
+
+export async function bulkSavePricingPlans(plans: (PricingPlanRecord & { shop_id: string })[]): Promise<void> {
+  if (Platform.OS === 'web' || plans.length === 0) return;
+  const localDb = getDb();
+  if (!localDb) return;
+
+  try {
+    await localDb.withTransactionAsync(async () => {
+      for (const p of plans) {
+        await localDb.runAsync(
+          `INSERT OR REPLACE INTO pricing_plans (id, name, description, price_multiplier, applicable_to, target_id, target_name, status, start_date, end_date, shop_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+          [p.id, p.name, p.description || null, p.price_multiplier, p.applicable_to, p.target_id || null, p.target_name || null, p.status, p.start_date, p.end_date, p.shop_id]
+        );
+      }
     });
+  } catch (err) {
+    console.error('[OfflineDB] bulkSavePricingPlans error:', err);
+    throw err;
   }
-
-  return new Promise((resolve, reject) => {
-    try {
-      db.runSync(
-        `UPDATE sales_queue SET synced = 1 WHERE id = ?;`,
-        [id]
-      );
-      resolve();
-    } catch (err) {
-      reject(err);
-    }
-  });
 }
 
-export function queueActivityLog(log: any): Promise<void> {
-  if (Platform.OS === 'web') return Promise.resolve();
+export async function clearPricingPlans(): Promise<void> {
+  if (Platform.OS === 'web') return;
   const localDb = getDb();
-  if (!localDb) return Promise.resolve();
-
-  return new Promise((resolve, reject) => {
-    try {
-      const id = Date.now().toString() + Math.random().toString(36).substr(2, 6);
-      const dataStr = JSON.stringify(log);
-      const created = new Date().toISOString();
-      localDb.runSync(
-        `INSERT INTO activity_logs_queue (id, data, synced, created_at) VALUES (?, ?, ?, ?);`,
-        [id, dataStr, 0, created]
-      );
-      resolve();
-    } catch (err) {
-      reject(err);
-    }
-  });
+  if (!localDb) return;
+  try {
+    await localDb.runAsync(`DELETE FROM pricing_plans;`);
+  } catch (err) {
+    console.error('[OfflineDB] clearPricingPlans error:', err);
+    throw err;
+  }
 }
 
-export function getPendingActivityLogs(): Promise<SaleRecord[]> {
-  if (Platform.OS === 'web') return Promise.resolve([]);
+export async function getPricingPlans(shopId?: string | null): Promise<PricingPlanRecord[]> {
+  if (Platform.OS === 'web') return [];
   const localDb = getDb();
-  if (!localDb) return Promise.resolve([]);
-
-  return new Promise((resolve, reject) => {
-    try {
-      const rows = localDb.getAllSync(`SELECT * FROM activity_logs_queue WHERE synced = 0;`);
-      const arr: SaleRecord[] = rows.map((r: any) => ({
-        id: r.id,
-        data: typeof r.data === 'string' ? JSON.parse(r.data) : r.data,
-        synced: r.synced === 1,
-        created_at: r.created_at,
-      }));
-      resolve(arr);
-    } catch (err) {
-      reject(err);
+  if (!localDb) return [];
+  try {
+    let query = `SELECT * FROM pricing_plans WHERE status = 'active'`;
+    const params: any[] = [];
+    if (shopId) {
+      query += ` AND shop_id = ?`;
+      params.push(shopId);
     }
-  });
+    const rows = await localDb.getAllAsync(query, params);
+    return rows as PricingPlanRecord[];
+  } catch (e) {
+    console.warn('[OfflineDB] getPricingPlans error:', e);
+    return [];
+  }
+}
+export async function saveReceiptDesign(d: ReceiptDesignRecord): Promise<void> {
+  if (Platform.OS === 'web') return;
+  const localDb = getDb();
+  if (!localDb) return;
+  try {
+    await localDb.runAsync(
+      `INSERT OR REPLACE INTO receipt_designs (id, shop_id, header, footer, receipt_size) VALUES (?, ?, ?, ?, ?);`,
+      [d.id, d.shop_id || null, d.header || null, d.footer || null, d.receipt_size]
+    );
+  } catch (err) {
+    console.error('[OfflineDB] saveReceiptDesign error:', err);
+    throw err;
+  }
 }
 
-export function markActivityLogSynced(id: string): Promise<void> {
-  if (Platform.OS === 'web') return Promise.resolve();
+export async function getReceiptDesign(shopId?: string | null): Promise<ReceiptDesignRecord | null> {
+  if (Platform.OS === 'web') return null;
   const localDb = getDb();
-  if (!localDb) return Promise.resolve();
-
-  return new Promise((resolve, reject) => {
-    try {
-      localDb.runSync(
-        `UPDATE activity_logs_queue SET synced = 1 WHERE id = ?;`,
-        [id]
-      );
-      resolve();
-    } catch (err) {
-      reject(err);
+  if (!localDb) return null;
+  try {
+    let query = `SELECT * FROM receipt_designs`;
+    const params: any[] = [];
+    if (shopId) {
+      query += ` WHERE shop_id = ? OR shop_id IS NULL`;
+      params.push(shopId);
+      query += ` ORDER BY shop_id DESC LIMIT 1;`;
+    } else {
+      query += ` LIMIT 1;`;
     }
-  });
-}
-
-export function saveDiscountPlan(p: DiscountPlanRecord & { shop_id: string }): Promise<void> {
-  if (Platform.OS === 'web') return Promise.resolve();
-  const localDb = getDb();
-  if (!localDb) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    try {
-      localDb.runSync(
-        `INSERT OR REPLACE INTO discount_plans (id, name, discount_type, discount_value, applicable_to, target_id, target_name, status, start_date, end_date, shop_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
-        [p.id, p.name, p.discount_type, p.discount_value, p.applicable_to, p.target_id || null, p.target_name || null, p.status, p.start_date, p.end_date, p.shop_id]
-      );
-      resolve();
-    } catch (err) {
-      reject(err);
-    }
-  });
-}
-
-export function clearDiscountPlans(): Promise<void> {
-  if (Platform.OS === 'web') return Promise.resolve();
-  const localDb = getDb();
-  if (!localDb) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    try {
-      localDb.runSync(`DELETE FROM discount_plans;`);
-      resolve();
-    } catch (err) {
-      reject(err);
-    }
-  });
-}
-
-export function getDiscountPlans(shopId?: string | null): Promise<DiscountPlanRecord[]> {
-  if (Platform.OS === 'web') return Promise.resolve([]);
-  const localDb = getDb();
-  if (!localDb) return Promise.resolve([]);
-  return new Promise((resolve) => {
-    try {
-      let query = `SELECT * FROM discount_plans WHERE status = 'active'`;
-      const params: any[] = [];
-      if (shopId) {
-        query += ` AND shop_id = ?`;
-        params.push(shopId);
-      }
-      const rows = localDb.getAllSync(query, params);
-      resolve(rows);
-    } catch (e) {
-      resolve([]);
-    }
-  });
-}
-
-export function savePricingPlan(p: PricingPlanRecord & { shop_id: string }): Promise<void> {
-  if (Platform.OS === 'web') return Promise.resolve();
-  const localDb = getDb();
-  if (!localDb) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    try {
-      localDb.runSync(
-        `INSERT OR REPLACE INTO pricing_plans (id, name, description, price_multiplier, applicable_to, target_id, target_name, status, start_date, end_date, shop_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
-        [p.id, p.name, p.description || null, p.price_multiplier, p.applicable_to, p.target_id || null, p.target_name || null, p.status, p.start_date, p.end_date, p.shop_id]
-      );
-      resolve();
-    } catch (err) {
-      reject(err);
-    }
-  });
-}
-
-export function clearPricingPlans(): Promise<void> {
-  if (Platform.OS === 'web') return Promise.resolve();
-  const localDb = getDb();
-  if (!localDb) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    try {
-      localDb.runSync(`DELETE FROM pricing_plans;`);
-      resolve();
-    } catch (err) {
-      reject(err);
-    }
-  });
-}
-
-export function getPricingPlans(shopId?: string | null): Promise<PricingPlanRecord[]> {
-  if (Platform.OS === 'web') return Promise.resolve([]);
-  const localDb = getDb();
-  if (!localDb) return Promise.resolve([]);
-  return new Promise((resolve) => {
-    try {
-      let query = `SELECT * FROM pricing_plans WHERE status = 'active'`;
-      const params: any[] = [];
-      if (shopId) {
-        query += ` AND shop_id = ?`;
-        params.push(shopId);
-      }
-      const rows = localDb.getAllSync(query, params);
-      resolve(rows);
-    } catch (e) {
-      resolve([]);
-    }
-  });
-}
-export function saveReceiptDesign(d: ReceiptDesignRecord): Promise<void> {
-  if (Platform.OS === 'web') return Promise.resolve();
-  const localDb = getDb();
-  if (!localDb) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    try {
-      localDb.runSync(
-        `INSERT OR REPLACE INTO receipt_designs (id, shop_id, header, footer, receipt_size) VALUES (?, ?, ?, ?, ?);`,
-        [d.id, d.shop_id || null, d.header || null, d.footer || null, d.receipt_size]
-      );
-      resolve();
-    } catch (err) {
-      reject(err);
-    }
-  });
-}
-
-export function getReceiptDesign(shopId?: string | null): Promise<ReceiptDesignRecord | null> {
-  if (Platform.OS === 'web') return Promise.resolve(null);
-  const localDb = getDb();
-  if (!localDb) return Promise.resolve(null);
-  return new Promise((resolve) => {
-    try {
-      let query = `SELECT * FROM receipt_designs`;
-      const params: any[] = [];
-      if (shopId) {
-        query += ` WHERE shop_id = ? OR shop_id IS NULL`;
-        params.push(shopId);
-        query += ` ORDER BY shop_id DESC LIMIT 1;`;
-      } else {
-        query += ` LIMIT 1;`;
-      }
-      const row = localDb.getFirstSync(query, params);
-      resolve(row || null);
-    } catch (e) {
-      resolve(null);
-    }
-  });
+    const row = await localDb.getFirstAsync(query, params);
+    return (row as ReceiptDesignRecord) || null;
+  } catch (e) {
+    console.warn('[OfflineDB] getReceiptDesign error:', e);
+    return null;
+  }
 }
 
 // --- Employee functions ---
 
-export function saveEmployee(emp: EmployeeRecord): Promise<void> {
-  if (Platform.OS === 'web') return Promise.resolve();
+export async function saveEmployee(emp: EmployeeRecord): Promise<void> {
+  if (Platform.OS === 'web') return;
   const localDb = getDb();
-  if (!localDb) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    try {
-      localDb.runSync(
-        `INSERT OR REPLACE INTO employees (employee_id, first_name, last_name, role, shop, pin, status) VALUES (?, ?, ?, ?, ?, ?, ?);`,
-        [emp.employee_id, emp.first_name, emp.last_name, emp.role, emp.shop, emp.pin, emp.status]
-      );
-      resolve();
-    } catch (err) {
-      reject(err);
-    }
-  });
+  if (!localDb) return;
+  try {
+    await localDb.runAsync(
+      `INSERT OR REPLACE INTO employees (employee_id, first_name, last_name, role, shop, pin, status) VALUES (?, ?, ?, ?, ?, ?, ?);`,
+      [emp.employee_id, emp.first_name, emp.last_name, emp.role, emp.shop, emp.pin, emp.status]
+    );
+  } catch (err) {
+    console.error('[OfflineDB] saveEmployee error:', err);
+    throw err;
+  }
 }
 
-export function getEmployeeByPin(pin: string): Promise<EmployeeRecord | null> {
-  if (Platform.OS === 'web') return Promise.resolve(null);
+export async function bulkSaveEmployees(employees: EmployeeRecord[]): Promise<void> {
+  if (Platform.OS === 'web' || employees.length === 0) return;
   const localDb = getDb();
-  if (!localDb) return Promise.resolve(null);
-  return new Promise((resolve) => {
-    try {
-      const row = localDb.getFirstSync(
-        `SELECT * FROM employees WHERE pin = ? AND status = 'active' LIMIT 1;`,
-        [pin]
-      );
-      resolve(row || null);
-    } catch (e) {
-      resolve(null);
-    }
-  });
+  if (!localDb) return;
+
+  try {
+    await localDb.withTransactionAsync(async () => {
+      for (const emp of employees) {
+        await localDb.runAsync(
+          `INSERT OR REPLACE INTO employees (employee_id, first_name, last_name, role, shop, pin, status) VALUES (?, ?, ?, ?, ?, ?, ?);`,
+          [emp.employee_id, emp.first_name, emp.last_name, emp.role, emp.shop, emp.pin, emp.status]
+        );
+      }
+    });
+  } catch (err) {
+    console.error('[OfflineDB] bulkSaveEmployees error:', err);
+    throw err;
+  }
 }
 
-export function clearEmployees(): Promise<void> {
-  if (Platform.OS === 'web') return Promise.resolve();
+export async function getEmployeeByPin(pin: string): Promise<EmployeeRecord | null> {
+  if (Platform.OS === 'web') return null;
   const localDb = getDb();
-  if (!localDb) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    try {
-      localDb.runSync(`DELETE FROM employees;`);
-      resolve();
-    } catch (err) {
-      reject(err);
-    }
-  });
+  if (!localDb) return null;
+  try {
+    const row = await localDb.getFirstAsync(
+      `SELECT * FROM employees WHERE pin = ? AND status = 'active' LIMIT 1;`,
+      [pin]
+    );
+    return (row as EmployeeRecord) || null;
+  } catch (e) {
+    console.warn('[OfflineDB] getEmployeeByPin error:', e);
+    return null;
+  }
+}
+
+export async function clearEmployees(): Promise<void> {
+  if (Platform.OS === 'web') return;
+  const localDb = getDb();
+  if (!localDb) return;
+  try {
+    await localDb.runAsync(`DELETE FROM employees;`);
+  } catch (err) {
+    console.error('[OfflineDB] clearEmployees error:', err);
+    throw err;
+  }
 }
 
 // --- Access Log functions ---
 
-export function queueAccessLog(log: Omit<OfflineAccessLog, 'id' | 'synced' | 'logout_time'>): Promise<string> {
-  if (Platform.OS === 'web') return Promise.resolve('web-id');
+export async function queueAccessLog(log: Omit<OfflineAccessLog, 'id' | 'synced' | 'logout_time'>): Promise<string> {
+  if (Platform.OS === 'web') return 'web-id';
   const localDb = getDb();
-  if (!localDb) return Promise.resolve('no-db');
-  return new Promise((resolve, reject) => {
-    try {
-      const id = Date.now().toString() + Math.random().toString(36).substr(2, 6);
-      localDb.runSync(
-        `INSERT INTO access_logs_queue (id, employee_id, shop_id, login_time, synced) VALUES (?, ?, ?, ?, 0);`,
-        [id, log.employee_id, log.shop_id, log.login_time]
-      );
-      resolve(id);
-    } catch (err) {
-      reject(err);
-    }
-  });
+  if (!localDb) return 'no-db';
+  try {
+    const id = Date.now().toString() + Math.random().toString(36).substr(2, 6);
+    await localDb.runAsync(
+      `INSERT INTO access_logs_queue (id, employee_id, shop_id, login_time, synced) VALUES (?, ?, ?, ?, 0);`,
+      [id, log.employee_id, log.shop_id, log.login_time]
+    );
+    return id;
+  } catch (err) {
+    console.error('[OfflineDB] queueAccessLog error:', err);
+    throw err;
+  }
 }
 
-export function updateAccessLogLogout(id: string, logoutTime: string): Promise<void> {
-  if (Platform.OS === 'web') return Promise.resolve();
+export async function updateAccessLogLogout(id: string, logoutTime: string): Promise<void> {
+  if (Platform.OS === 'web') return;
   const localDb = getDb();
-  if (!localDb) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    try {
-      localDb.runSync(
-        `UPDATE access_logs_queue SET logout_time = ? WHERE id = ?;`,
-        [logoutTime, id]
-      );
-      resolve();
-    } catch (err) {
-      reject(err);
-    }
-  });
+  if (!localDb) return;
+  try {
+    await localDb.runAsync(
+      `UPDATE access_logs_queue SET logout_time = ? WHERE id = ?;`,
+      [logoutTime, id]
+    );
+  } catch (err) {
+    console.error('[OfflineDB] updateAccessLogLogout error:', err);
+    throw err;
+  }
 }
 
-export function getPendingAccessLogs(): Promise<OfflineAccessLog[]> {
-  if (Platform.OS === 'web') return Promise.resolve([]);
+export async function getPendingAccessLogs(): Promise<OfflineAccessLog[]> {
+  if (Platform.OS === 'web') return [];
   const localDb = getDb();
-  if (!localDb) return Promise.resolve([]);
-  return new Promise((resolve, reject) => {
-    try {
-      const rows = localDb.getAllSync(`SELECT * FROM access_logs_queue WHERE synced = 0;`);
-      resolve(rows.map((r: any) => ({ ...r, synced: r.synced === 1 })));
-    } catch (err) {
-      reject(err);
-    }
-  });
+  if (!localDb) return [];
+  try {
+    const rows = await localDb.getAllAsync(`SELECT * FROM access_logs_queue WHERE synced = 0;`);
+    return rows.map((r: any) => ({ ...r, synced: r.synced === 1 })) as OfflineAccessLog[];
+  } catch (err) {
+    console.error('[OfflineDB] getPendingAccessLogs error:', err);
+    return [];
+  }
 }
 
-export function markAccessLogSynced(id: string): Promise<void> {
-  if (Platform.OS === 'web') return Promise.resolve();
+export async function markAccessLogSynced(id: string): Promise<void> {
+  if (Platform.OS === 'web') return;
   const localDb = getDb();
-  if (!localDb) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    try {
-      localDb.runSync(`UPDATE access_logs_queue SET synced = 1 WHERE id = ?;`, [id]);
-      resolve();
-    } catch (err) {
-      reject(err);
-    }
-  });
+  if (!localDb) return;
+  try {
+    await localDb.runAsync(`UPDATE access_logs_queue SET synced = 1 WHERE id = ?;`, [id]);
+  } catch (err) {
+    console.error('[OfflineDB] markAccessLogSynced error:', err);
+    throw err;
+  }
 }

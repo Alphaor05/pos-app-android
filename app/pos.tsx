@@ -1,5 +1,5 @@
 /** vCache_104 **/
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useDeferredValue, memo } from 'react';
 import {
   View,
   Text,
@@ -61,7 +61,7 @@ async function fetchProductsFromSupabase(shopId: string | null): Promise<Product
     }
   }
 
-  let query = supabase.from('products').select('*, product_shop_stock(price, in_stock, available)');
+  let query = supabase.from('products').select('*, product_shop_stock(price, in_stock, available)').limit(5000);
   if (shopId) {
     query = query.eq('product_shop_stock.shop_id', shopId);
   }
@@ -102,11 +102,9 @@ async function fetchProductsFromSupabase(shopId: string | null): Promise<Product
 
   // Sync to local DB
   try {
-    const { clearProducts, addProduct } = await import('@/lib/offlineDb');
+    const { clearProducts, bulkAddProducts } = await import('@/lib/offlineDb');
     await clearProducts();
-    for (const p of merged) {
-      await addProduct({ ...p as any, in_stock: (p as any).inStock ?? 9999 });
-    }
+    await bulkAddProducts(merged.map(p => ({ ...p as any, in_stock: (p as any).inStock ?? 9999 })));
   } catch (e) {
     console.warn('Sync products error:', e);
   }
@@ -149,11 +147,9 @@ async function fetchDiscountPlansFromSupabase(shopId: string | null): Promise<Di
 
   // Sync to local DB
   try {
-    const { clearDiscountPlans, saveDiscountPlan } = await import('@/lib/offlineDb');
+    const { clearDiscountPlans, bulkSaveDiscountPlans } = await import('@/lib/offlineDb');
     await clearDiscountPlans();
-    for (const p of results) {
-      await saveDiscountPlan({ ...p, shop_id: shopId || '' } as any);
-    }
+    await bulkSaveDiscountPlans(results.map(p => ({ ...p, shop_id: shopId || '' } as any)));
   } catch (e) {
     console.warn('Sync discount plans error:', e);
   }
@@ -196,11 +192,9 @@ async function fetchPricingPlansFromSupabase(shopId: string | null): Promise<Pri
 
   // Sync to local DB
   try {
-    const { clearPricingPlans, savePricingPlan } = await import('@/lib/offlineDb');
+    const { clearPricingPlans, bulkSavePricingPlans } = await import('@/lib/offlineDb');
     await clearPricingPlans();
-    for (const p of results) {
-      await savePricingPlan({ ...p, shop_id: shopId || '' } as any);
-    }
+    await bulkSavePricingPlans(results.map(p => ({ ...p, shop_id: shopId || '' } as any)));
   } catch (e) {
     console.warn('Sync pricing plans error:', e);
   }
@@ -226,6 +220,7 @@ export default function POSScreen() {
 
   // 2. ALL STATES
   const [search, setSearch] = useState('');
+  const deferredSearch = useDeferredValue(search);
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [orderSuccess, setOrderSuccess] = useState(false);
   const [discount, setDiscount] = useState('0');
@@ -328,31 +323,66 @@ export default function POSScreen() {
   }, [currentTime]);
 
   const adjustedProducts = useMemo(() => {
+    // Pre-group plans to avoid filtering them for every single product
+    const pricingPlansByType = {
+      all: [] as PricingPlan[],
+      product: {} as Record<string, PricingPlan[]>,
+      category: {} as Record<string, PricingPlan[]>,
+    };
+
+    activePricingPlans.forEach(plan => {
+      if (plan.status !== 'active' || !isDateValid(plan.start_date, plan.end_date)) return;
+      if (plan.applicable_to === 'all') {
+        pricingPlansByType.all.push(plan);
+      } else if (plan.applicable_to === 'product') {
+        const key = plan.target_id || normalize(plan.target_name || '');
+        if (!pricingPlansByType.product[key]) pricingPlansByType.product[key] = [];
+        pricingPlansByType.product[key].push(plan);
+      } else if (plan.applicable_to === 'category') {
+        const key = normalize(plan.target_name || '');
+        if (!pricingPlansByType.category[key]) pricingPlansByType.category[key] = [];
+        pricingPlansByType.category[key].push(plan);
+      }
+    });
+
+    const discountPlansByType = {
+      all: [] as DiscountPlan[],
+      product: {} as Record<string, DiscountPlan[]>,
+      category: {} as Record<string, DiscountPlan[]>,
+    };
+
+    activeDiscountPlans.forEach(plan => {
+      if (plan.status !== 'active' || !isDateValid(plan.start_date, plan.end_date)) return;
+      if (plan.applicable_to === 'all') {
+        discountPlansByType.all.push(plan);
+      } else if (plan.applicable_to === 'product') {
+        const key = plan.target_id || normalize(plan.target_name || '');
+        if (!discountPlansByType.product[key]) discountPlansByType.product[key] = [];
+        discountPlansByType.product[key].push(plan);
+      } else if (plan.applicable_to === 'category') {
+        const key = normalize(plan.target_name || '');
+        if (!discountPlansByType.category[key]) discountPlansByType.category[key] = [];
+        discountPlansByType.category[key].push(plan);
+      }
+    });
+
     return products.map(p => {
       const targetName = normalize(p.name);
-      const productCategory = normalize(p.category);
+      const productCategory = normalize(p.category || '');
 
-      // 1. Evaluate Pricing Plans (Multipliers)
-      const pricingPlans = activePricingPlans.filter(plan => {
-        if (plan.status !== 'active') return false;
-        if (!isDateValid(plan.start_date, plan.end_date)) return false;
-        if (plan.applicable_to === 'all') return true;
-        
-        const planTarget = normalize(plan.target_name || '');
-        if (plan.applicable_to === 'product') {
-          return plan.target_id === p.id || (planTarget && planTarget === targetName);
-        }
-        if (plan.applicable_to === 'category') {
-          return planTarget && planTarget === productCategory;
-        }
-        return false;
-      });
+      // 1. Evaluate Pricing Plans
+      const applicablePricing = [
+        ...pricingPlansByType.all,
+        ...(pricingPlansByType.product[p.id] || []),
+        ...(pricingPlansByType.product[targetName] || []),
+        ...(pricingPlansByType.category[productCategory] || []),
+      ];
 
       let priceFromPricing = p.price;
-      if (pricingPlans.length > 0) {
+      if (applicablePricing.length > 0) {
         let bestMult = 1;
         let set = false;
-        pricingPlans.forEach(plan => {
+        applicablePricing.forEach(plan => {
           const mult = typeof plan.price_multiplier === 'string' ? parseFloat(plan.price_multiplier) : plan.price_multiplier;
           if (!isNaN(mult)) {
             if (!set || mult < bestMult) {
@@ -364,26 +394,18 @@ export default function POSScreen() {
         priceFromPricing = p.price * bestMult;
       }
 
-      // 2. Evaluate Discount Plans (Direct discounts)
-      const discountPlans = activeDiscountPlans.filter(plan => {
-        if (plan.status !== 'active') return false;
-        if (!isDateValid(plan.start_date, plan.end_date)) return false;
-        if (plan.applicable_to === 'all') return true;
-
-        const planTarget = normalize(plan.target_name || '');
-        if (plan.applicable_to === 'product') {
-          return plan.target_id === p.id || (planTarget && planTarget === targetName);
-        }
-        if (plan.applicable_to === 'category') {
-          return planTarget && planTarget === productCategory;
-        }
-        return false;
-      });
+      // 2. Evaluate Discount Plans
+      const applicableDiscounts = [
+        ...discountPlansByType.all,
+        ...(discountPlansByType.product[p.id] || []),
+        ...(discountPlansByType.product[targetName] || []),
+        ...(discountPlansByType.category[productCategory] || []),
+      ];
 
       let priceFromDiscount = p.price;
-      if (discountPlans.length > 0) {
+      if (applicableDiscounts.length > 0) {
         let lowestPrice = p.price;
-        discountPlans.forEach(plan => {
+        applicableDiscounts.forEach(plan => {
           const val = typeof plan.discount_value === 'string' ? parseFloat(plan.discount_value) : plan.discount_value;
           if (!isNaN(val)) {
             let discounted = p.price;
@@ -411,19 +433,25 @@ export default function POSScreen() {
 
   const categories = useMemo(() => {
     const cats = new Set<string>();
-    adjustedProducts.forEach(p => { if (p.category) cats.add(p.category); });
+    adjustedProducts.forEach(p => { 
+      if (p.category) {
+        // Normalize to UPPERCASE to avoid duplicates like "Bakery" vs "BAKERY"
+        cats.add(p.category.trim().toUpperCase());
+      }
+    });
     return ['All', ...Array.from(cats).sort()];
   }, [adjustedProducts]);
 
   const filteredProducts = useMemo(() => {
     return adjustedProducts.filter(p => {
-      const matchCat = selectedCategory === 'All' || p.category === selectedCategory;
+      const pCat = p.category ? p.category.trim().toUpperCase() : '';
+      const matchCat = selectedCategory === 'All' || pCat === selectedCategory;
       const matchSearch =
-        p.name.toLowerCase().includes(search.toLowerCase()) ||
-        (p.sku ?? '').toLowerCase().includes(search.toLowerCase());
+        p.name.toLowerCase().includes(deferredSearch.toLowerCase()) ||
+        (p.sku ?? '').toLowerCase().includes(deferredSearch.toLowerCase());
       return matchCat && matchSearch;
     });
-  }, [adjustedProducts, search, selectedCategory]);
+  }, [adjustedProducts, deferredSearch, selectedCategory]);
 
   const autoDiscountTotal = useMemo(() => {
     let totalDisc = 0;
@@ -687,6 +715,7 @@ export default function POSScreen() {
         total: saleRecord.total,
         createdAt: saleRecord.createdAt,
         paymentMethod: selectedPaymentMethod,
+        employeeName: employee ? `${employee.first_name} ${employee.last_name}` : 'Staff',
         settings: parsedSettings
       });
 
@@ -809,6 +838,10 @@ export default function POSScreen() {
               renderItem={({ item }) => (
                 <ProductCard product={item} onPress={addItem} styles={styles} s={s} />
               )}
+              initialNumToRender={isTablet ? 20 : 10}
+              maxToRenderPerBatch={isTablet ? 20 : 10}
+              windowSize={isTablet ? 7 : 5}
+              removeClippedSubviews={Platform.OS !== 'web'}
               ListEmptyComponent={
                 <View style={styles.emptyState}>
                   <Feather name="package" size={s(36)} color={C.textMuted} />
@@ -1059,7 +1092,7 @@ function CategoryTab({ label, selected, onPress, styles }: { label: string; sele
   );
 }
 
-function ProductCard({ product, onPress, styles, s }: { product: Product; onPress: (p: Product) => void; styles: any; s: any }) {
+const ProductCard = React.memo(({ product, onPress, styles, s }: { product: Product; onPress: (p: Product) => void; styles: any; s: any }) => {
   const isOutOfStock = (product.inStock ?? 0) <= 0;
   const scale = useSharedValue(1);
   const animStyle = useAnimatedStyle(() => ({
@@ -1117,7 +1150,15 @@ function ProductCard({ product, onPress, styles, s }: { product: Product; onPres
       </Animated.View>
     </Pressable>
   );
-}
+}, (prev, next) => {
+  return (
+    prev.product.id === next.product.id &&
+    prev.product.price === next.product.price &&
+    prev.product.inStock === next.product.inStock &&
+    prev.product.name === next.product.name &&
+    prev.product.image_url === next.product.image_url
+  );
+});
 
 function CartRow({
   item,
