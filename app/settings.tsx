@@ -214,8 +214,10 @@ function BluetoothSection() {
               <Text style={styles.connectedName}>{connectedDevice.name}</Text>
               <Text style={styles.connectedAddress}>{connectedDevice.address}</Text>
               <View style={styles.connectedBadge}>
-                <View style={styles.connectedDot} />
-                <Text style={styles.connectedBadgeText}>Successful Connection</Text>
+                <View style={[styles.connectedDot, status === 'failed' && { backgroundColor: C.danger }]} />
+                <Text style={[styles.connectedBadgeText, status === 'failed' && { color: C.danger }]}>
+                  {status === 'failed' ? 'Connection Failed' : 'Successful Connection'}
+                </Text>
               </View>
             </View>
           </View>
@@ -256,12 +258,11 @@ function BluetoothSection() {
             <Text style={styles.quickConnectSub}>Model: BT-583 (86:67:7A:3B:87:CE)</Text>
             <Text style={[
               styles.quickConnectAction,
-              status === 'bluetooth_off' && { color: C.danger },
-              status === 'location_off' && { color: C.warning }
+              (status === 'bluetooth_off' || status === 'failed') && { color: C.danger }
             ]}>
               {status === 'connecting' ? 'Verifying Hardware...' : 
                status === 'bluetooth_off' ? 'Bluetooth Unavailable' :
-               status === 'location_off' ? 'Location Required' :
+               status === 'failed' ? 'Failed to Connect (Click to Retry)' :
                'Click to Auto-Link Printer'}
             </Text>
           </View>
@@ -295,18 +296,6 @@ function BluetoothSection() {
         </View>
       )}
 
-      {status === 'location_off' && (
-        <View style={styles.errorBanner}>
-          <Ionicons name="location" size={16} color={C.danger} />
-          <Text style={styles.errorBannerText}>Location services must be enabled to scan.</Text>
-          <Pressable 
-            onPress={() => Linking.sendIntent('android.settings.LOCATION_SOURCE_SETTINGS').catch(() => {})} 
-            style={styles.bannerAction}
-          >
-            <Text style={styles.bannerActionText}>Enable</Text>
-          </Pressable>
-        </View>
-      )}
 
       {(scannedDevices.length > 0 || status === 'scanning') && (
         <View style={styles.deviceList}>

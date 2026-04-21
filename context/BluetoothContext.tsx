@@ -14,7 +14,7 @@ export interface BluetoothDevice {
   rssi: number;
 }
 
-type ConnectionStatus = 'disconnected' | 'scanning' | 'connecting' | 'connected' | 'bluetooth_off' | 'location_off';
+type ConnectionStatus = 'disconnected' | 'scanning' | 'connecting' | 'connected' | 'failed' | 'bluetooth_off';
 
 export interface ReceiptData {
   orderId: string;
@@ -25,6 +25,7 @@ export interface ReceiptData {
   total: number;
   createdAt: string;
   paymentMethod?: string;
+  employeeName?: string;
   settings?: {
     businessName?: string;
     address?: string;
@@ -61,17 +62,38 @@ export function BluetoothProvider({ children }: { children: ReactNode }) {
   const [scannedDevices, setScannedDevices] = useState<BluetoothDevice[]>([]);
 
   useEffect(() => {
-    AsyncStorage.getItem(STORAGE_KEY).then((stored) => {
+    const initPrinter = async () => {
+      const stored = await AsyncStorage.getItem(STORAGE_KEY);
       if (stored) {
         try {
           const device = JSON.parse(stored) as BluetoothDevice;
           setConnectedDevice(device);
-          setStatus('connected');
+          setStatus('connecting');
+
+          // Verify if the stored device is actually reachable
+          const { NativeModules } = require('react-native');
+          if (NativeModules.PrinterModule?.verifyHardware) {
+            const result = await NativeModules.PrinterModule.verifyHardware(device.address);
+            if (result === 'SUCCESS') {
+              setStatus('connected');
+            } else if (result === 'NO_BLUETOOTH') {
+              setStatus('bluetooth_off');
+            } else {
+              setStatus('failed');
+            }
+          } else {
+            // Fallback if native module isn't ready
+            setStatus('connected');
+          }
         } catch (e) {
+          console.warn('Failed to restore printer', e);
           AsyncStorage.removeItem(STORAGE_KEY);
+          setStatus('disconnected');
         }
       }
-    });
+    };
+
+    initPrinter();
   }, []);
 
   const checkPermissions = async () => {
@@ -162,8 +184,6 @@ export function BluetoothProvider({ children }: { children: ReactNode }) {
       const msg = error?.message || '';
       if (msg.includes('Bluetooth') && msg.includes('off')) {
         setStatus('bluetooth_off');
-      } else if (msg.includes('Location') || msg.includes('permission')) {
-        setStatus('location_off');
       } else {
         setStatus('disconnected');
       }
@@ -201,7 +221,7 @@ export function BluetoothProvider({ children }: { children: ReactNode }) {
         
         if (result === 'UNREACHABLE') {
           Alert.alert('Printer Unreachable', 'Could not establish a connection to the printer. Please ensure it is turned on and paired in Android settings.');
-          setStatus('disconnected');
+          setStatus('failed');
           return;
         }
       }
