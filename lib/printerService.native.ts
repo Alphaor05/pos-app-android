@@ -2,6 +2,9 @@ import { NativeModules } from 'react-native';
 
 export interface PrinterService {
     printReceipt(device: { address: string; name: string }, data: any): Promise<boolean>;
+    getPairedDevices(): Promise<any[]>;
+    enableBluetooth(): Promise<boolean>;
+    openBluetoothSettings(): Promise<boolean>;
 }
 
 export const printerService = {
@@ -26,6 +29,33 @@ export const printerService = {
             return await NativeModules.PrinterModule.printReceipt(payload);
         } catch (error) {
             console.warn('Native PrinterModule bridge failed', error);
+            return false;
+        }
+    },
+    
+    async getPairedDevices(): Promise<any[]> {
+        try {
+            return await NativeModules.PrinterModule.getPairedDevices();
+        } catch (error) {
+            console.error('Failed to get paired devices', error);
+            return [];
+        }
+    },
+
+    async enableBluetooth(): Promise<boolean> {
+        try {
+            return await NativeModules.PrinterModule.enableBluetooth();
+        } catch (error) {
+            console.error('Failed to enable bluetooth', error);
+            return false;
+        }
+    },
+
+    async openBluetoothSettings(): Promise<boolean> {
+        try {
+            return await NativeModules.PrinterModule.openBluetoothSettings();
+        } catch (error) {
+            console.error('Failed to open bluetooth settings', error);
             return false;
         }
     }

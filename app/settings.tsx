@@ -12,6 +12,14 @@ import {
   RefreshControl,
   ActivityIndicator,
 } from 'react-native';
+import Animated, { 
+  useSharedValue, 
+  useAnimatedStyle, 
+  withSpring, 
+  withRepeat, 
+  withTiming, 
+  Easing,
+} from 'react-native-reanimated';
 import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
@@ -133,32 +141,45 @@ export default function SettingsScreen() {
   );
 }
 
-const COMMON_PRINTERS = [
-  { id: '1', name: 'Epson TM-T20III', note: 'Thermal receipt printer' },
-  { id: '2', name: 'Star TSP143III', note: 'USB / Bluetooth / LAN' },
-  { id: '3', name: 'Bixolon SRP-350III', note: 'Thermal POS printer' },
-  { id: '4', name: 'Citizen CT-S310II', note: 'Compact receipt printer' },
-  { id: '5', name: 'Xprinter XP-58', note: 'Portable Bluetooth printer' },
-];
-
 function BluetoothSection() {
-  const { connectedDevice, disconnect, connect, startScan, stopScan, scannedDevices, status, testPrint } = useBluetooth();
+  const { connectedDevice, disconnect, connect, refreshPairedDevices, pairedDevices, status, testPrint, enableBluetooth, openSettings } = useBluetooth();
   const [printerName, setPrinterName] = useState('');
   const [printerAddress, setPrinterAddress] = useState('');
   const [saved, setSaved] = useState(false);
   const [testing, setTesting] = useState(false);
 
-  const openSystemSettings = () => {
-    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    if (Platform.OS === 'android') {
-      Linking.sendIntent('android.settings.BLUETOOTH_SETTINGS').catch(() => {
-        Alert.alert('Bluetooth', 'Could not open Bluetooth settings. Please open them manually.');
-      });
-    } else if (Platform.OS === 'ios') {
-      Linking.openURL('App-Prefs:Bluetooth').catch(() => {
-        Alert.alert('Bluetooth', 'Open Settings → Bluetooth to pair your printer.');
-      });
+  // Animation values
+  const scale = useSharedValue(1);
+  const rotation = useSharedValue(0);
+
+  useEffect(() => {
+    if (status === 'refreshing') {
+      rotation.value = withRepeat(
+        withTiming(360, { duration: 1000, easing: Easing.linear }),
+        -1,
+        false
+      );
+    } else {
+      rotation.value = withTiming(0);
     }
+  }, [status]);
+
+  const animatedButtonStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: scale.value }],
+  }));
+
+  const animatedIconStyle = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${rotation.value}deg` }],
+  }));
+
+  const openSystemSettings = async () => {
+    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    await openSettings();
+  };
+ 
+  const handleEnableBluetooth = async () => {
+    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    await enableBluetooth();
   };
  
   const handleTestPrint = async () => {
@@ -232,8 +253,14 @@ function BluetoothSection() {
         </View>
       ) : (
         <Pressable 
-          onPress={() => {
+          onPress={async () => {
             if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+            
+            if (status === 'bluetooth_off') {
+              await openSystemSettings();
+              return;
+            }
+
             connect({
               id: '86:67:7A:3B:87:CE',
               name: 'BT-583',
@@ -271,16 +298,27 @@ function BluetoothSection() {
       )}
 
       <View style={{ flexDirection: 'row', gap: 10 }}>
-        <Pressable 
-          onPress={() => {
-            if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-            status === 'scanning' ? stopScan() : startScan();
-          }} 
-          style={[styles.scanBtn, { flex: 1 }]}
-        >
-          {status === 'scanning' ? <ActivityIndicator size="small" color={C.accent} /> : <Feather name="search" size={20} color={C.accent} />}
-          <Text style={styles.scanBtnText}>{status === 'scanning' ? 'Scanning...' : 'Scan for Printers'}</Text>
-        </Pressable>
+        <Animated.View style={[{ flex: 1 }, animatedButtonStyle]}>
+          <Pressable 
+            onPressIn={() => scale.value = withSpring(0.95)}
+            onPressOut={() => scale.value = withSpring(1)}
+            onPress={() => {
+              if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+              refreshPairedDevices();
+            }} 
+            style={styles.scanBtn}
+          >
+            {status === 'refreshing' ? (
+              <Animated.View style={animatedIconStyle}>
+                <MaterialCommunityIcons name="refresh" size={20} color={C.accent} />
+              </Animated.View>
+            ) : (
+              <MaterialCommunityIcons name="refresh" size={20} color={C.accent} />
+            )}
+            <Text style={styles.scanBtnText}>{status === 'refreshing' ? 'Refreshing...' : 'Refresh Paired Devices'}</Text>
+          </Pressable>
+        </Animated.View>
+        
         <Pressable onPress={openSystemSettings} style={[styles.scanBtn, { paddingHorizontal: 16 }]}>
           <MaterialCommunityIcons name="cog-outline" size={20} color={C.accent} />
         </Pressable>
@@ -289,18 +327,18 @@ function BluetoothSection() {
       {status === 'bluetooth_off' && (
         <View style={styles.errorBanner}>
           <Ionicons name="bluetooth" size={16} color={C.danger} />
-          <Text style={styles.errorBannerText}>Bluetooth is turned off in system settings.</Text>
-          <Pressable onPress={openSystemSettings} style={styles.bannerAction}>
-            <Text style={styles.bannerActionText}>Enable</Text>
+          <Text style={styles.errorBannerText}>Bluetooth is turned off.</Text>
+          <Pressable onPress={handleEnableBluetooth} style={styles.bannerAction}>
+            <Text style={styles.bannerActionText}>Turn On</Text>
           </Pressable>
         </View>
       )}
 
 
-      {(scannedDevices.length > 0 || status === 'scanning') && (
+      {(pairedDevices.length > 0 || status === 'refreshing') && (
         <View style={styles.deviceList}>
-          <Text style={styles.deviceListLabel}>Discovered Devices</Text>
-          {scannedDevices.map(device => (
+          <Text style={styles.deviceListLabel}>Paired Printers</Text>
+          {pairedDevices.map(device => (
             <Pressable
               key={device.id}
               style={styles.deviceRow}
@@ -314,12 +352,20 @@ function BluetoothSection() {
                 <Text style={styles.deviceAddress}>{device.address}</Text>
               </View>
               <View style={styles.deviceRight}>
-                <Text style={styles.pairBtnText}>Connect</Text>
+                <Text style={styles.pairBtnText}>Select</Text>
               </View>
             </Pressable>
           ))}
-          {scannedDevices.length === 0 && status === 'scanning' && (
-            <Text style={styles.emptyText}>Searching for physical printers...</Text>
+          {pairedDevices.length === 0 && status === 'refreshing' && (
+            <ActivityIndicator size="small" color={C.accent} style={{ marginTop: 10 }} />
+          )}
+          {pairedDevices.length === 0 && status !== 'refreshing' && (
+            <View style={styles.emptyPairedCard}>
+              <Text style={styles.emptyText}>No paired printers found.</Text>
+              <Pressable onPress={openSystemSettings}>
+                <Text style={styles.linkText}>Pair a device in Settings</Text>
+              </Pressable>
+            </View>
           )}
         </View>
       )}
@@ -372,7 +418,6 @@ function PinSection() {
     </View>
   );
 }
-
 
 function AboutSection() {
   return (
@@ -450,6 +495,23 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: C.textSecondary,
     marginBottom: 6,
+  },
+  shopRow: {
+    backgroundColor: C.card,
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: C.border,
+  },
+  shopRowSelected: {
+    backgroundColor: C.accentDim,
+    borderColor: C.accent,
+  },
+  shopRowText: {
+    fontFamily: 'Inter_500Medium',
+    fontSize: 14,
+    color: C.text,
   },
   connectedCard: {
     backgroundColor: C.successDim,
@@ -533,25 +595,6 @@ const styles = StyleSheet.create({
     fontFamily: 'Inter_600SemiBold',
     fontSize: 13,
     color: C.accentLight,
-  },
-  notConnectedCard: {
-    backgroundColor: C.card,
-    borderRadius: 14,
-    padding: 24,
-    alignItems: 'center',
-    gap: 6,
-    borderWidth: 1,
-    borderColor: C.border,
-  },
-  notConnectedText: {
-    fontFamily: 'Inter_500Medium',
-    fontSize: 15,
-    color: C.textSecondary,
-  },
-  notConnectedSub: {
-    fontFamily: 'Inter_400Regular',
-    fontSize: 13,
-    color: C.textMuted,
   },
   scanBtn: {
     borderRadius: 12,
@@ -663,29 +706,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 10,
   },
-  pairBtn: {
-    paddingHorizontal: 14,
-    paddingVertical: 6,
-    borderRadius: 8,
-    backgroundColor: C.accentDim,
-    borderWidth: 1,
-    borderColor: C.accent,
-  },
   pairBtnText: {
     fontFamily: 'Inter_600SemiBold',
     fontSize: 13,
     color: C.accentLight,
-  },
-  connectedSmallBadge: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 6,
-    backgroundColor: C.successDim,
-  },
-  connectedSmallText: {
-    fontFamily: 'Inter_500Medium',
-    fontSize: 12,
-    color: C.success,
   },
   quickConnectCard: {
     backgroundColor: C.card,
@@ -733,75 +757,6 @@ const styles = StyleSheet.create({
     color: C.accent,
     marginTop: 4,
   },
-  pinInfoCard: {
-    backgroundColor: C.card,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: C.border,
-    padding: 20,
-    alignItems: 'center',
-    gap: 6,
-  },
-  pinInfoTitle: {
-    fontFamily: 'Inter_600SemiBold',
-    fontSize: 15,
-    color: C.text,
-    marginBottom: 4,
-  },
-  pinInfoText: {
-    fontFamily: 'Inter_400Regular',
-    fontSize: 13,
-    color: C.textSecondary,
-    textAlign: 'center',
-    lineHeight: 20,
-  },
-  aboutCard: {
-    backgroundColor: C.card,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: C.border,
-    overflow: 'hidden',
-  },
-  aboutRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: C.border,
-  },
-  aboutLabel: {
-    fontFamily: 'Inter_400Regular',
-    fontSize: 14,
-    color: C.textSecondary,
-  },
-  aboutValue: {
-    fontFamily: 'Inter_500Medium',
-    fontSize: 14,
-    color: C.text,
-  },
-  shopRow: {
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    backgroundColor: C.card,
-    marginBottom: 4,
-  },
-  shopRowSelected: {
-    backgroundColor: C.accentDim,
-  },
-  shopRowText: {
-    fontFamily: 'Inter_400Regular',
-    fontSize: 14,
-    color: C.text,
-  },
-  emptyText: {
-    fontFamily: 'Inter_400Regular',
-    fontSize: 13,
-    color: C.textMuted,
-    textAlign: 'center',
-    marginTop: 10,
-  },
   errorBanner: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -829,5 +784,68 @@ const styles = StyleSheet.create({
     fontFamily: 'Inter_600SemiBold',
     fontSize: 11,
     color: '#fff',
+  },
+  emptyPairedCard: {
+    padding: 20,
+    alignItems: 'center',
+    gap: 8,
+  },
+  emptyText: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 13,
+    color: C.textMuted,
+    textAlign: 'center',
+    marginTop: 10,
+  },
+  linkText: {
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 14,
+    color: C.accent,
+    textDecorationLine: 'underline',
+  },
+  pinInfoCard: {
+    backgroundColor: C.card,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: C.border,
+    padding: 20,
+    alignItems: 'center',
+    gap: 6,
+  },
+  pinInfoTitle: {
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 15,
+    color: C.text,
+    marginBottom: 4,
+  },
+  pinInfoText: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 13,
+    color: C.textSecondary,
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  aboutCard: {
+    backgroundColor: C.card,
+    borderRadius: 14,
+    padding: 16,
+    gap: 12,
+    borderWidth: 1,
+    borderColor: C.border,
+  },
+  aboutRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  aboutLabel: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 14,
+    color: C.textSecondary,
+  },
+  aboutValue: {
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 14,
+    color: C.text,
   },
 });

@@ -14,7 +14,7 @@ export interface BluetoothDevice {
   rssi: number;
 }
 
-type ConnectionStatus = 'disconnected' | 'scanning' | 'connecting' | 'connected' | 'failed' | 'bluetooth_off';
+type ConnectionStatus = 'disconnected' | 'refreshing' | 'connecting' | 'connected' | 'failed' | 'bluetooth_off';
 
 export interface ReceiptData {
   orderId: string;
@@ -35,12 +35,19 @@ export interface ReceiptData {
   };
 }
 
+export interface PairedDevice {
+  id: string;
+  name: string;
+  address: string;
+}
+
 interface BluetoothContextValue {
   connectedDevice: BluetoothDevice | null;
   status: ConnectionStatus;
-  scannedDevices: BluetoothDevice[];
-  startScan: () => void;
-  stopScan: () => void;
+  pairedDevices: PairedDevice[];
+  refreshPairedDevices: () => Promise<void>;
+  enableBluetooth: () => Promise<void>;
+  openSettings: () => Promise<void>;
   connect: (device: BluetoothDevice) => Promise<void>;
   disconnect: () => void;
   printReceipt: (data: ReceiptData) => Promise<boolean>;
@@ -49,20 +56,26 @@ interface BluetoothContextValue {
 
 const BluetoothContext = createContext<BluetoothContextValue | null>(null);
 
-const MOCK_DEVICES: BluetoothDevice[] = [
-  { id: '1', name: 'Fiscal Printer FP-80', address: 'AA:BB:CC:DD:EE:01', rssi: -45 },
-  { id: '2', name: 'DATECS FP-700', address: 'AA:BB:CC:DD:EE:02', rssi: -62 },
-  { id: '3', name: 'EPSON TM-T88', address: 'AA:BB:CC:DD:EE:03', rssi: -70 },
-  { id: '4', name: 'Star TSP143', address: 'AA:BB:CC:DD:EE:04', rssi: -78 },
-];
+const MOCK_DEVICES: BluetoothDevice[] = [];
 
 export function BluetoothProvider({ children }: { children: ReactNode }) {
   const [connectedDevice, setConnectedDevice] = useState<BluetoothDevice | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
-  const [scannedDevices, setScannedDevices] = useState<BluetoothDevice[]>([]);
+  const [pairedDevices, setPairedDevices] = useState<PairedDevice[]>([]);
 
   useEffect(() => {
     const initPrinter = async () => {
+      const { NativeModules } = require('react-native');
+      const module = NativeModules.PrinterModule;
+
+      // 1. Initial Hardware Check
+      if (Platform.OS === 'web') {
+        setStatus('bluetooth_off');
+      } else if (module?.verifyHardware) {
+        const check = await module.verifyHardware(""); // Quick BT check
+        if (check === 'NO_BLUETOOTH') setStatus('bluetooth_off');
+      }
+
       const stored = await AsyncStorage.getItem(STORAGE_KEY);
       if (stored) {
         try {
@@ -71,9 +84,8 @@ export function BluetoothProvider({ children }: { children: ReactNode }) {
           setStatus('connecting');
 
           // Verify if the stored device is actually reachable
-          const { NativeModules } = require('react-native');
-          if (NativeModules.PrinterModule?.verifyHardware) {
-            const result = await NativeModules.PrinterModule.verifyHardware(device.address);
+          if (module?.verifyHardware) {
+            const result = await module.verifyHardware(device.address);
             if (result === 'SUCCESS') {
               setStatus('connected');
             } else if (result === 'NO_BLUETOOTH') {
@@ -81,9 +93,11 @@ export function BluetoothProvider({ children }: { children: ReactNode }) {
             } else {
               setStatus('failed');
             }
+          } else if (Platform.OS === 'android') {
+            // If on Android but module missing, we can't verify.
+            setStatus('failed');
           } else {
-            // Fallback if native module isn't ready
-            setStatus('connected');
+            // Web/Other - we already set bluetooth_off above
           }
         } catch (e) {
           console.warn('Failed to restore printer', e);
@@ -99,103 +113,74 @@ export function BluetoothProvider({ children }: { children: ReactNode }) {
   const checkPermissions = async () => {
     if (Platform.OS !== 'android') return true;
     
-    // For Android 12+ (API 31+)
+    // For Android 12+ (API 31+), we ONLY need BLUETOOTH_CONNECT to talk to paired devices
     if (Platform.Version >= 31) {
       const { PermissionsAndroid } = require('react-native');
       const results = await PermissionsAndroid.requestMultiple([
-        PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
         PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
-        PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
       ]);
       return (
-        results['android.permission.BLUETOOTH_SCAN'] === PermissionsAndroid.RESULTS.GRANTED &&
-        results['android.permission.BLUETOOTH_CONNECT'] === PermissionsAndroid.RESULTS.GRANTED &&
-        results['android.permission.ACCESS_FINE_LOCATION'] === PermissionsAndroid.RESULTS.GRANTED
+        results['android.permission.BLUETOOTH_CONNECT'] === PermissionsAndroid.RESULTS.GRANTED
       );
-    } else {
-      const { PermissionsAndroid } = require('react-native');
-      const granted = await PermissionsAndroid.request(
-        PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION
-      );
-      return granted === PermissionsAndroid.RESULTS.GRANTED;
-    }
+    } 
+    
+    // For older Android versions, BLUETOOTH and BLUETOOTH_ADMIN are normal permissions (granted at install)
+    return true;
   };
 
-  const startScan = async () => {
+  const refreshPairedDevices = async () => {
     const hasPerms = await checkPermissions();
     if (!hasPerms) {
-      console.warn('Bluetooth permissions denied');
+      Alert.alert('Permissions Required', 'Bluetooth connection permission is needed to access paired devices.');
       return;
     }
 
-    setStatus('scanning');
-    setScannedDevices([]);
+    setStatus('refreshing');
+    setPairedDevices([]);
     
-    if (Platform.OS === 'web') {
+    if ((Platform.OS as any) === 'web') {
       setStatus('disconnected');
       return;
     }
 
     try {
-      const { Printer } = require('react-native-esc-pos-printer');
+      // Use our new native bridge to get paired devices
+      const devices = await printerService.getPairedDevices();
+      setPairedDevices(devices);
       
-      // Check if discovery is available
-      if (!Printer.startDiscovery) {
-        console.warn('Printer discovery not supported by this version/platform');
-        setStatus('disconnected');
-        return;
+      if (devices.length > 0) {
+        if (Platform.OS !== 'web') {
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+        }
       }
-
-      // Try with explicit type for better reliability on some units
-      await Printer.startDiscovery({ type: 'bluetooth' }, (device: any) => {
-        setScannedDevices(prev => {
-          // Use deviceName or target as ID
-          const deviceId = device.target || device.deviceName;
-          if (!deviceId || prev.find(d => d.id === deviceId)) return prev;
-          
-          // New device discovered - VIBRATE
-          if (Platform.OS !== 'web') {
-            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-          }
-
-          return [...prev, {
-            id: deviceId,
-            name: device.deviceName || 'Pos Printer',
-            address: (device.target || '').replace('BT:', ''),
-            rssi: device.rssi || 0
-          }];
-        });
-      });
-
-      // Stop scan after 12 seconds
-      setTimeout(() => {
-        Printer.stopDiscovery().catch(() => {});
-        setStatus(prev => {
-          if (prev === 'scanning') {
-            return connectedDevice ? 'connected' : 'disconnected';
-          }
-          return prev;
-        });
-      }, 12000);
-
+      
+      setStatus(connectedDevice ? 'connected' : 'disconnected');
     } catch (error: any) {
-      console.warn('Discovery failed', error);
-      // provide more context in status if possible
-      const msg = error?.message || '';
-      if (msg.includes('Bluetooth') && msg.includes('off')) {
+      console.warn('Failed to get paired devices', error);
+      if (error?.message?.includes('disabled')) {
         setStatus('bluetooth_off');
       } else {
-        setStatus('disconnected');
+        setStatus('failed');
       }
     }
   };
 
-  const stopScan = async () => {
+  const enableBluetooth = async () => {
     try {
-      const { Printer } = require('react-native-esc-pos-printer');
-      if (Printer.stopDiscovery) await Printer.stopDiscovery();
-    } catch (e) {}
-    setStatus(connectedDevice ? 'connected' : 'disconnected');
+      await printerService.enableBluetooth();
+      // After requesting, refresh list
+      setTimeout(refreshPairedDevices, 1000);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const openSettings = async () => {
+    try {
+      await printerService.openBluetoothSettings();
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   const connect = async (device: BluetoothDevice) => {
@@ -203,27 +188,37 @@ export function BluetoothProvider({ children }: { children: ReactNode }) {
     try {
       const hasPerms = await checkPermissions();
       if (!hasPerms) {
-        Alert.alert('Permissions Required', 'Bluetooth and Location permissions are needed to connect to printers.');
+        Alert.alert('Permissions Required', 'Bluetooth connection permission is needed to connect to printers.');
         setStatus('disconnected');
         return;
       }
 
-      // 1. HARDWARE VERIFICATION (New)
+      // 1. HARDWARE VERIFICATION
       const { NativeModules } = require('react-native');
-      if (NativeModules.PrinterModule?.verifyHardware) {
-        const result = await NativeModules.PrinterModule.verifyHardware(device.address);
+      const module = NativeModules.PrinterModule;
+
+      if (module?.verifyHardware) {
+        const result = await module.verifyHardware(device.address);
         
         if (result === 'NO_BLUETOOTH') {
-          Alert.alert('Bluetooth Required', 'Your device does not have Bluetooth hardware or it is disabled.');
           setStatus('bluetooth_off');
+          Alert.alert('Bluetooth Required', 'Please turn on Bluetooth to connect to the printer.');
           return;
         }
         
         if (result === 'UNREACHABLE') {
-          Alert.alert('Printer Unreachable', 'Could not establish a connection to the printer. Please ensure it is turned on and paired in Android settings.');
           setStatus('failed');
+          Alert.alert('Printer Unreachable', 'Could not establish a connection. Please ensure the printer is turned on and paired.');
           return;
         }
+      } else if (Platform.OS === 'web') {
+        // Prevent false positives on Web/PC
+        setStatus('bluetooth_off');
+        Alert.alert('Not Supported', 'Bluetooth printing is only supported on the Android application.');
+        return;
+      } else {
+        // On Android but module missing? Probably a dev build issue.
+        console.warn('PrinterModule.verifyHardware not found. Check native implementation.');
       }
 
       // 2. PROCEED ONLY ON SUCCESS
@@ -281,14 +276,15 @@ export function BluetoothProvider({ children }: { children: ReactNode }) {
   const value = useMemo(() => ({
     connectedDevice,
     status,
-    scannedDevices,
-    startScan,
-    stopScan,
+    pairedDevices,
+    refreshPairedDevices,
+    enableBluetooth,
+    openSettings,
     connect,
     disconnect,
     printReceipt,
     testPrint,
-  }), [connectedDevice, status, scannedDevices]);
+  }), [connectedDevice, status, pairedDevices]);
 
   return <BluetoothContext.Provider value={value}>{children}</BluetoothContext.Provider>;
 }
