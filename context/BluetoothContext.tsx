@@ -132,12 +132,24 @@ export function BluetoothProvider({ children }: { children: ReactNode }) {
       // On Android 12+, we need BLUETOOTH_CONNECT permission
       if (Platform.OS === 'android' && Platform.Version >= 31) {
         const { PermissionsAndroid } = require('react-native');
-        const btConnect = await PermissionsAndroid.check(
+        const hasPermission = await PermissionsAndroid.check(
           PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT
         );
-        if (!btConnect) {
-          console.log('[BT] BLUETOOTH_CONNECT not yet granted, skipping getPairedDevices');
-          return;
+        
+        if (!hasPermission) {
+          console.log('[BT] Requesting BLUETOOTH_CONNECT permission...');
+          const result = await PermissionsAndroid.request(
+            PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
+            {
+              title: 'Bluetooth Permission',
+              message: 'CrunchNum needs access to Bluetooth to connect to your thermal printer.',
+              buttonPositive: 'OK',
+            }
+          );
+          if (result !== PermissionsAndroid.RESULTS.GRANTED) {
+            console.log('[BT] Permission denied by user');
+            return;
+          }
         }
       }
       
