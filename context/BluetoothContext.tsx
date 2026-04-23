@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode } from 'react';
-import { Platform, Alert } from 'react-native';
+import { Platform, Alert, AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Haptics from 'expo-haptics';
 import { printerService } from '@/lib/printerService';
@@ -113,6 +113,18 @@ export function BluetoothProvider({ children }: { children: ReactNode }) {
 
     initPrinter();
     refreshPairedDevices();
+
+    // Refresh list when app returns to foreground (after user pairs in settings)
+    const subscription = AppState.addEventListener('change', nextAppState => {
+      if (nextAppState === 'active') {
+        console.log('[BT] App returned to foreground, refreshing paired list...');
+        refreshPairedDevices();
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
   }, []);
 
   const refreshPairedDevices = async () => {
