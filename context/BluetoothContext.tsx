@@ -137,6 +137,7 @@ export function BluetoothProvider({ children }: { children: ReactNode }) {
         // 1. Android 12+ Bluetooth permissions
         if (Platform.Version >= 31) {
           permsToRequest.push(PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT);
+          permsToRequest.push(PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN);
         }
 
         // 2. Location permissions (Required for Bluetooth on many tablets/versions)
