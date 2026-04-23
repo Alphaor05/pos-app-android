@@ -129,27 +129,30 @@ export function BluetoothProvider({ children }: { children: ReactNode }) {
 
   const refreshPairedDevices = async () => {
     try {
-      // On Android 12+, we need BLUETOOTH_CONNECT permission
-      if (Platform.OS === 'android' && Platform.Version >= 31) {
+      // UNIVERSAL PERMISSION REQUEST (The "Nuclear Option")
+      if (Platform.OS === 'android') {
         const { PermissionsAndroid } = require('react-native');
-        const hasPermission = await PermissionsAndroid.check(
-          PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT
-        );
+        const permsToRequest = [];
+
+        // 1. Android 12+ Bluetooth permissions
+        if (Platform.Version >= 31) {
+          permsToRequest.push(PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT);
+        }
+
+        // 2. Location permissions (Required for Bluetooth on many tablets/versions)
+        permsToRequest.push(PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION);
+
+        const results = await PermissionsAndroid.requestMultiple(permsToRequest);
         
-        if (!hasPermission) {
-          console.log('[BT] Requesting BLUETOOTH_CONNECT permission...');
-          const result = await PermissionsAndroid.request(
-            PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
-            {
-              title: 'Bluetooth Permission',
-              message: 'CrunchNum needs access to Bluetooth to connect to your thermal printer.',
-              buttonPositive: 'OK',
-            }
-          );
-          if (result !== PermissionsAndroid.RESULTS.GRANTED) {
-            console.log('[BT] Permission denied by user');
-            return;
-          }
+        // Log results for debugging
+        console.log('[BT] Permission results:', results);
+
+        const allGranted = Object.values(results).every(
+          res => res === PermissionsAndroid.RESULTS.GRANTED
+        );
+
+        if (!allGranted) {
+          console.log('[BT] Some permissions denied. Continuing anyway to try hardware access...');
         }
       }
       
