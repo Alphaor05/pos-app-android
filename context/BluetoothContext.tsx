@@ -66,7 +66,6 @@ export function BluetoothProvider({ children }: { children: ReactNode }) {
   const { shopId } = useAuth();
   const [connectedDevice, setConnectedDevice] = useState<BluetoothDevice | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
-  const [scannedDevices, setScannedDevices] = useState<BluetoothDevice[]>([]);
   const [pairedDevices, setPairedDevices] = useState<BluetoothDevice[]>([]);
   const [scannedDevices, setScannedDevices] = useState<BluetoothDevice[]>([]);
   const [isScanning, setIsScanning] = useState(false);
