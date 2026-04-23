@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode } from 'react';
-import { Platform, Alert, AppState } from 'react-native';
+import { Platform, Alert, AppState, DeviceEventEmitter, NativeModules } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Haptics from 'expo-haptics';
 import { printerService } from '@/lib/printerService';
@@ -68,6 +68,8 @@ export function BluetoothProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const [scannedDevices, setScannedDevices] = useState<BluetoothDevice[]>([]);
   const [pairedDevices, setPairedDevices] = useState<BluetoothDevice[]>([]);
+  const [scannedDevices, setScannedDevices] = useState<BluetoothDevice[]>([]);
+  const [isScanning, setIsScanning] = useState(false);
   const [isPrinting, setIsPrinting] = useState(false);
 
   useEffect(() => {
@@ -124,6 +126,26 @@ export function BluetoothProvider({ children }: { children: ReactNode }) {
 
     return () => {
       subscription.remove();
+    };
+  }, []);
+
+  useEffect(() => {
+    // Listen for discovered devices from the native scan
+    const sub = DeviceEventEmitter.addListener('onDeviceFound', (device) => {
+      setScannedDevices(prev => {
+        if (prev.find(d => d.address === device.address)) return prev;
+        const newDevice = {
+          id: device.address,
+          name: device.name || 'Nearby Printer',
+          address: device.address,
+          rssi: 0
+        };
+        return [...prev, newDevice];
+      });
+    });
+
+    return () => {
+      sub.remove();
     };
   }, []);
 
@@ -208,14 +230,32 @@ export function BluetoothProvider({ children }: { children: ReactNode }) {
       Alert.alert('Permission Denied', 'Bluetooth permission is required to list printers.');
       return;
     }
+    
+    setIsScanning(true);
+    setScannedDevices([]); // Clear previous scan results
     setStatus('scanning');
-    await refreshPairedDevices();
-    setTimeout(() => {
-        setStatus(connectedDevice ? 'connected' : 'disconnected');
-    }, 1500);
+    
+    try {
+      await NativeModules.PrinterModule.startDiscovery();
+      // Auto-refresh paired devices as well
+      await refreshPairedDevices();
+      
+      // Stop scanning after 20 seconds
+      setTimeout(() => {
+        stopScan();
+      }, 20000);
+    } catch (e) {
+      console.warn('Failed to start discovery:', e);
+      setIsScanning(false);
+      setStatus(connectedDevice ? 'connected' : 'disconnected');
+    }
   };
 
   const stopScan = async () => {
+    try {
+      await NativeModules.PrinterModule.stopDiscovery();
+    } catch (e) {}
+    setIsScanning(false);
     setStatus(connectedDevice ? 'connected' : 'disconnected');
   };
 
@@ -349,7 +389,7 @@ export function BluetoothProvider({ children }: { children: ReactNode }) {
   const value = useMemo(() => ({
     connectedDevice,
     status,
-    scannedDevices,
+    scannedDevices: [...scannedDevices, ...pairedDevices.filter(p => !scannedDevices.find(s => s.address === p.address))],
     pairedDevices,
     startScan,
     stopScan,
@@ -361,7 +401,8 @@ export function BluetoothProvider({ children }: { children: ReactNode }) {
     enableBluetooth,
     openSettings,
     isPrinting,
-  }), [connectedDevice, status, scannedDevices, pairedDevices, isPrinting]);
+    isScanning,
+  }), [connectedDevice, status, scannedDevices, pairedDevices, isPrinting, isScanning]);
 
   return <BluetoothContext.Provider value={value}>{children}</BluetoothContext.Provider>;
 }
