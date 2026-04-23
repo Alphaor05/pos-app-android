@@ -298,6 +298,15 @@ export function BluetoothProvider({ children }: { children: ReactNode }) {
             return;
           }
           
+          if (status_code === 'BONDING_REQUIRED') {
+            Alert.alert(
+              'Pairing Required',
+              'Please check your tablet screen for a Bluetooth Pairing Request. \n\nEnter PIN (usually 0000 or 1234) to bond with the printer, then try connecting again.'
+            );
+            setStatus('disconnected');
+            return;
+          }
+          
           if (status_code !== 'SUCCESS') {
             Alert.alert('Connection Failed', 'An unexpected error occurred. Please try again.');
             setStatus('failed');
