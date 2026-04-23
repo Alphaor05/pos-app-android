@@ -707,28 +707,29 @@ export default function POSScreen() {
         items: saleRecord.items.map((i: any) => ({
           name: i.name,
           quantity: i.quantity,
-          price: i.price
+          price: i.price,
         })),
         subtotal: saleRecord.subtotal,
         discount: saleRecord.discount,
-        tax: saleRecord.tax,
         total: saleRecord.total,
         createdAt: saleRecord.createdAt,
         paymentMethod: selectedPaymentMethod,
-        employeeName: employee ? `${employee.first_name} ${employee.last_name}` : 'Staff',
-        settings: parsedSettings
+        employeeName: employee
+          ? `${employee.first_name ?? ''} ${employee.last_name ?? ''}`.trim()
+          : 'Staff',
+        // shopId is injected by BluetoothContext.printReceipt automatically
       });
 
-      if (!success) {
+      if (!success && btStatus === 'connected') {
+        // Only alert if printer is connected — otherwise it's expected to fail
         Alert.alert(
           'Printer Error',
-          'Sale was saved, but the receipt could not be printed. Please check your printer connection in Settings.',
+          'Sale was saved successfully, but the receipt could not be printed.\nCheck your printer in Settings.',
           [{ text: 'OK' }]
         );
       }
     } catch (e) {
-      console.warn('Silent local print failed', e);
-      Alert.alert('Printer Error', 'A technical error occurred while trying to print.');
+      console.warn('[POS] Silent print failed:', e);
     }
 
     setOrderSuccess(true);
@@ -968,6 +969,27 @@ export default function POSScreen() {
                 <Text style={styles.printerBadgeText}>{connectedDevice.name}</Text>
               </View>
             )}
+
+            {btStatus === 'failed' && (
+              <View style={[styles.printerBadge, { backgroundColor: C.dangerDim, borderColor: C.danger }]}>
+                <MaterialCommunityIcons name="printer-alert" size={s(11)} color={C.danger} />
+                <Text style={[styles.printerBadgeText, { color: C.danger }]}>Printer Error</Text>
+              </View>
+            )}
+
+            {btStatus === 'bluetooth_off' && (
+              <View style={[styles.printerBadge, { backgroundColor: C.warningDim, borderColor: C.warning || C.accent }]}>
+                <MaterialCommunityIcons name="bluetooth-off" size={s(11)} color={C.warning || C.accent} />
+                <Text style={[styles.printerBadgeText, { color: C.warning || C.accent }]}>Bluetooth Off</Text>
+              </View>
+            )}
+
+            {(!connectedDevice || (btStatus !== 'connected' && btStatus !== 'failed' && btStatus !== 'bluetooth_off')) && (
+              <View style={[styles.printerBadge, { backgroundColor: C.textMuted + '20', borderColor: C.textMuted }]}>
+                <MaterialCommunityIcons name="printer-off" size={s(11)} color={C.textMuted} />
+                <Text style={[styles.printerBadgeText, { color: C.textMuted }]}>No Printer</Text>
+              </View>
+            )}
             
             <View style={styles.actionBtns}>
               <Pressable
@@ -1026,11 +1048,12 @@ export default function POSScreen() {
               <Pressable
                 style={[
                   styles.chargeBtn,
-                  (items.length === 0 || !shopId) && styles.chargeBtnDisabled,
+                  (items.length === 0) && styles.chargeBtnDisabled,
+                  (!shopId && items.length > 0) && { opacity: 0.8 }, // Slight fade if shopId missing but items present
                   orderSuccess && styles.chargeBtnSuccess,
                 ]}
                 onPress={handleCharge}
-                disabled={items.length === 0 || !shopId}
+                disabled={items.length === 0}
               >
                 <Text style={styles.chargeBtnText}>
                   {orderSuccess ? 'OK!' : 'CHARGE'}

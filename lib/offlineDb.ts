@@ -611,6 +611,7 @@ export async function getPricingPlans(shopId?: string | null): Promise<PricingPl
     return [];
   }
 }
+
 export async function saveReceiptDesign(d: ReceiptDesignRecord): Promise<void> {
   if (Platform.OS === 'web') return;
   const localDb = getDb();
@@ -634,7 +635,7 @@ export async function getReceiptDesign(shopId?: string | null): Promise<ReceiptD
     let query = `SELECT * FROM receipt_designs`;
     const params: any[] = [];
     if (shopId) {
-      query += ` WHERE shop_id = ? OR shop_id IS NULL`;
+      query += ` WHERE shop_id = ? OR id = 'default'`;
       params.push(shopId);
       query += ` ORDER BY shop_id DESC LIMIT 1;`;
     } else {
