@@ -14,6 +14,7 @@ import com.dantsu.escposprinter.connection.usb.UsbPrintersConnections
 import com.dantsu.escposprinter.connection.tcp.TcpConnection
 import com.facebook.react.modules.core.DeviceEventManagerModule
 import java.util.*
+import java.util.concurrent.Callable
 import java.util.concurrent.FutureTask
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
@@ -351,7 +352,7 @@ class PrinterManager(private val context: Context) {
     @Throws(Exception::class)
     private fun <T> withPrintTimeout(block: () -> T): T {
 
-        val future = FutureTask(block)
+        val future = FutureTask<T>(Callable { block() })
         val thread = Thread(future, "PrinterOp-${System.currentTimeMillis()}")
         thread.isDaemon = true
         thread.start()
