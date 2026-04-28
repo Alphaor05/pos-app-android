@@ -181,10 +181,7 @@ dependencies {
         implementation jscFlavor
     }
 
-    // Supabase & Serialization
-    implementation("io.github.jan-tennert.supabase:postgrest-kt:3.0.2")
-    implementation("io.github.jan-tennert.supabase:realtime-kt:3.0.2")
-    implementation("io.ktor:ktor-client-android:3.0.3")
+    // Supabase dependencies removed (stubbed natively)
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
 
     // Bluetooth Thermal Printer (DantSu)

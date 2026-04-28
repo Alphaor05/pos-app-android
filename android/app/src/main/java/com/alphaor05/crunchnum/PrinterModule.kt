@@ -155,7 +155,7 @@ class PrinterModule(reactContext: ReactApplicationContext) : ReactContextBaseJav
     fun enableBluetooth(promise: Promise) {
         try {
             Log.d(TAG, "enableBluetooth called")
-            printerManager.requestBluetoothEnable(currentActivity)
+            printerManager.requestBluetoothEnable(getCurrentActivity())
             promise.resolve(true)
         } catch (e: Exception) {
             Log.e(TAG, "Error enabling Bluetooth", e)
