@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Broad filter to catch almost any USB device that could be a printer -->
+    <!-- We don't specify vendor-id or product-id so it catches all -->
+    <usb-device class="7" /> <!-- Printer Class -->
+    <usb-device class="255" /> <!-- Vendor Specific (Common for cheap printers) -->
+    <usb-device class="0" /> <!-- Interface level classification -->
+</resources>
