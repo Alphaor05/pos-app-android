@@ -55,7 +55,10 @@
       "router": {
         "origin": "https://replit.com/"
       },
-      "eas": {}
+      "eas": {
+        "projectId": "ba600dfd-ce23-4522-8533-ce89d10892f1"
+      }
     },
+    "owner": "alphaor05"
   }
 }
