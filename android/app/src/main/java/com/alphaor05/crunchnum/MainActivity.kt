@@ -3,6 +3,7 @@ import expo.modules.splashscreen.SplashScreenManager
 
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
@@ -17,42 +18,36 @@ import androidx.core.content.ContextCompat
 
 class MainActivity : ReactActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
-    // Set the theme to AppTheme BEFORE onCreate to support
-    // coloring the background, status bar, and navigation bar.
-    // This is required for expo-splash-screen.
-    // setTheme(R.style.AppTheme);
-    // @generated begin expo-splashscreen - expo prebuild (DO NOT MODIFY) sync-f3ff59a738c56c9a6119210cb55f0b613eb8b6af
+    Log.d("MainActivity", "onCreate fired")
     SplashScreenManager.registerOnActivity(this)
-    // @generated end expo-splashscreen
     super.onCreate(null)
-    
     checkPermissionsAndInit()
   }
 
   private fun checkPermissionsAndInit() {
-    val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        arrayOf(
-            Manifest.permission.BLUETOOTH_CONNECT,
-            Manifest.permission.BLUETOOTH_SCAN
-        )
-    } else {
-        arrayOf<String>() // No runtime permissions needed for Bluetooth on older versions for paired devices
+    Log.d("MainActivity", "checkPermissionsAndInit fired, SDK=${Build.VERSION.SDK_INT}")
+    val permissions = mutableListOf(
+        Manifest.permission.ACCESS_FINE_LOCATION,
+        Manifest.permission.ACCESS_COARSE_LOCATION,
+    )
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
+        permissions.add(Manifest.permission.BLUETOOTH_SCAN)
     }
-
-    val missingPermissions = permissions.filter {
-        ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
-    }
-
-    if (missingPermissions.isNotEmpty()) {
-        ActivityCompat.requestPermissions(this, missingPermissions.toTypedArray(), 101)
-    } else {
-        initPrintingService()
-    }
+    
+    // Always request — no filter, no skip
+    ActivityCompat.requestPermissions(this, permissions.toTypedArray(), 101)
   }
 
   override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
     super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-    if (requestCode == 101 && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
+    if (requestCode == 101) {
+        // Log what was granted and what was denied
+        permissions.forEachIndexed { index, permission ->
+            val result = if (grantResults[index] == PackageManager.PERMISSION_GRANTED) "GRANTED" else "DENIED"
+            Log.d("MainActivity", "Permission $permission: $result")
+        }
+        // Always initialize — let PrinterManager handle missing permissions gracefully
         initPrintingService()
     }
   }
