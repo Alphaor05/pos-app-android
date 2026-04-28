@@ -65,6 +65,13 @@ export interface ReceiptDesignRecord {
   header?: string | null;
   footer?: string | null;
   receipt_size: string;
+  auto_print?: boolean;
+  styled_header?: boolean;
+  cash_drawer?: boolean;
+  printer_name?: string;
+  print_mode?: string;
+  extra_space?: string;
+  drawer_cmds?: string;
 }
 
 export interface EmployeeRecord {
@@ -280,9 +287,45 @@ export function initDb() {
         shop_id TEXT,
         header TEXT,
         footer TEXT,
-        receipt_size TEXT
+        receipt_size TEXT,
+        auto_print INTEGER DEFAULT 1,
+        styled_header INTEGER DEFAULT 0,
+        cash_drawer INTEGER DEFAULT 0,
+        printer_name TEXT,
+        print_mode TEXT,
+        extra_space TEXT,
+        drawer_cmds TEXT
       );
     `);
+
+    // Migrations for receipt_designs
+    try {
+      const tableInfo = localDb.getAllSync(`PRAGMA table_info(receipt_designs);`);
+      const columns = tableInfo.map((c: any) => c.name);
+      if (!columns.includes('auto_print')) {
+        localDb.execSync(`ALTER TABLE receipt_designs ADD COLUMN auto_print INTEGER DEFAULT 1;`);
+      }
+      if (!columns.includes('styled_header')) {
+        localDb.execSync(`ALTER TABLE receipt_designs ADD COLUMN styled_header INTEGER DEFAULT 0;`);
+      }
+      if (!columns.includes('cash_drawer')) {
+        localDb.execSync(`ALTER TABLE receipt_designs ADD COLUMN cash_drawer INTEGER DEFAULT 0;`);
+      }
+      if (!columns.includes('printer_name')) {
+        localDb.execSync(`ALTER TABLE receipt_designs ADD COLUMN printer_name TEXT;`);
+      }
+      if (!columns.includes('print_mode')) {
+        localDb.execSync(`ALTER TABLE receipt_designs ADD COLUMN print_mode TEXT;`);
+      }
+      if (!columns.includes('extra_space')) {
+        localDb.execSync(`ALTER TABLE receipt_designs ADD COLUMN extra_space TEXT;`);
+      }
+      if (!columns.includes('drawer_cmds')) {
+        localDb.execSync(`ALTER TABLE receipt_designs ADD COLUMN drawer_cmds TEXT;`);
+      }
+    } catch (e) {
+      console.warn('Migration for receipt_designs failed:', e);
+    }
 
     // Added for offline login
     localDb.execSync(`
@@ -618,8 +661,21 @@ export async function saveReceiptDesign(d: ReceiptDesignRecord): Promise<void> {
   if (!localDb) return;
   try {
     await localDb.runAsync(
-      `INSERT OR REPLACE INTO receipt_designs (id, shop_id, header, footer, receipt_size) VALUES (?, ?, ?, ?, ?);`,
-      [d.id, d.shop_id || null, d.header || null, d.footer || null, d.receipt_size]
+      `INSERT OR REPLACE INTO receipt_designs (id, shop_id, header, footer, receipt_size, auto_print, styled_header, cash_drawer, printer_name, print_mode, extra_space, drawer_cmds) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+      [
+        d.id, 
+        d.shop_id || null, 
+        d.header || null, 
+        d.footer || null, 
+        d.receipt_size,
+        d.auto_print ? 1 : 0,
+        d.styled_header ? 1 : 0,
+        d.cash_drawer ? 1 : 0,
+        d.printer_name || null,
+        d.print_mode || null,
+        d.extra_space || null,
+        d.drawer_cmds || null
+      ]
     );
   } catch (err) {
     console.error('[OfflineDB] saveReceiptDesign error:', err);
@@ -641,8 +697,17 @@ export async function getReceiptDesign(shopId?: string | null): Promise<ReceiptD
     } else {
       query += ` LIMIT 1;`;
     }
-    const row = await localDb.getFirstAsync(query, params);
-    return (row as ReceiptDesignRecord) || null;
+    const row = await localDb.getFirstAsync(query, params) as any;
+    if (!row) return null;
+    return {
+      ...row,
+      auto_print: row.auto_print === 1,
+      styled_header: row.styled_header === 1,
+      cash_drawer: row.cash_drawer === 1,
+      print_mode: row.print_mode || 'Text',
+      extra_space: row.extra_space || '10mm',
+      drawer_cmds: row.drawer_cmds || '1B,70,00,3C,FF',
+    } as ReceiptDesignRecord;
   } catch (e) {
     console.warn('[OfflineDB] getReceiptDesign error:', e);
     return null;

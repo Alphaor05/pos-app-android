@@ -8,7 +8,7 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { queryClient } from "@/lib/query-client";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
 import { CartProvider } from "@/context/CartContext";
-import { BluetoothProvider } from "@/context/BluetoothContext";
+import { PrinterProvider } from "@/context/PrinterContext";
 import {
   useFonts,
   Inter_400Regular,
@@ -88,13 +88,13 @@ export default function RootLayout() {
       <QueryClientProvider client={queryClient}>
         <AuthProvider>
           <CartProvider>
-            <BluetoothProvider>
+            <PrinterProvider>
               <GestureHandlerRootView style={{ flex: 1 }}>
                 <KeyboardProvider>
                   <RootLayoutNav />
                 </KeyboardProvider>
               </GestureHandlerRootView>
-            </BluetoothProvider>
+            </PrinterProvider>
           </CartProvider>
         </AuthProvider>
       </QueryClientProvider>

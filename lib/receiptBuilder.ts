@@ -13,6 +13,7 @@
 
 import { Platform } from 'react-native';
 import { getReceiptDesign, ReceiptDesignRecord } from '@/lib/offlineDb';
+import { formatRow4 } from '@/lib/escPosUtils';
 
 export interface ReceiptItem {
   name: string;
@@ -72,6 +73,9 @@ export async function buildReceipt(payload: ReceiptPayload): Promise<{
   formattedText: string;
   widthMM: number;
   charsPerLine: number;
+  openCashDrawer?: boolean;
+  drawerCmds?: string;
+  printMode?: string;
 }> {
   // 1. Load design from offline DB (falls back to default if not found)
   let design: Omit<ReceiptDesignRecord, 'id' | 'shop_id'> = DEFAULT_DESIGN;
@@ -94,6 +98,11 @@ export async function buildReceipt(payload: ReceiptPayload): Promise<{
   const lines: string[] = [];
 
   // ── HEADER ──
+  if (payload.orderId.startsWith('TEST-')) {
+    lines.push("[C]<font size='big'><b>Test Print Successful</b></font>");
+    lines.push(`[C]${divider}`);
+  }
+
   if (design.header) {
     design.header.split('\n').forEach(line => {
       lines.push(`[C]<b>${line.trim()}</b>`);
@@ -111,7 +120,7 @@ export async function buildReceipt(payload: ReceiptPayload): Promise<{
   lines.push(`[C]${divider}`);
 
   // ── ITEMS HEADER ──
-  lines.push(`[L]<b>Item</b>[R]<b>Amt</b>`);
+  lines.push(`[L]<b>${formatRow4('Qty', 'Item', 'Price', 'SubT', lineWidth)}</b>`);
   lines.push(`[C]${divider}`);
 
   // ── ITEMS ──
@@ -119,24 +128,27 @@ export async function buildReceipt(payload: ReceiptPayload): Promise<{
   for (const item of payload.items) {
     totalQty += item.quantity;
     const lineTotal = item.quantity * item.price;
-    // Item name on its own line (truncated if needed)
-    lines.push(`[L]${item.name.slice(0, lineWidth - 1)}`);
-    // Detail: qty × price → subtotal right-aligned
-    lines.push(`[L]  ${item.quantity} x ${fmtPrice(item.price)}[R]${fmtPrice(lineTotal)}`);
+    
+    // Use formatRow4 for the aligned 4-column layout
+    lines.push(`[L]${formatRow4(
+      item.quantity.toString(),
+      item.name,
+      item.price.toFixed(2),
+      lineTotal.toFixed(2),
+      lineWidth
+    )}`);
   }
 
   lines.push(`[C]${divider}`);
 
   // ── TOTALS ──
-  lines.push(`[L]Items:[R]${totalQty}`);
-
   if (payload.discount && payload.discount > 0) {
     lines.push(`[L]Subtotal:[R]${fmtPrice(payload.subtotal)}`);
     lines.push(`[L]Discount:[R]-${fmtPrice(payload.discount)}`);
   }
 
   // Grand Total — big and bold
-  lines.push(`[L]<b><font size='big'>TOTAL:</font></b>[R]<b><font size='big'>${fmtPrice(payload.total)}</font></b>`);
+  lines.push(`[L]<b>TOTAL:</b>[R]<b>${fmtPrice(payload.total)}</b>`);
 
   if (payload.paymentMethod) {
     lines.push(`[L]Payment:[R]${payload.paymentMethod}`);
@@ -151,14 +163,24 @@ export async function buildReceipt(payload: ReceiptPayload): Promise<{
     });
   }
 
-  // Trailing feed for clean cut
-  lines.push('');
-  lines.push('');
-  lines.push('');
+  // Trailing feed for clean cut based on extra_space
+  let emptyLines = 3; // default for 10mm
+  if (design.extra_space === '0mm') emptyLines = 0;
+  else if (design.extra_space === '5mm') emptyLines = 1;
+  else if (design.extra_space === '10mm') emptyLines = 3;
+  else if (design.extra_space === '15mm') emptyLines = 4;
+  else if (design.extra_space === '20mm') emptyLines = 6;
+
+  for (let i = 0; i < emptyLines; i++) {
+    lines.push('');
+  }
 
   return {
     formattedText: lines.join('\n'),
-    widthMM: is80mm ? 80 : 48, // 48mm is the printable width for 58mm paper usually
+    widthMM: is80mm ? 72 : 48, // 72mm is standard printable width for 80mm paper
     charsPerLine: lineWidth,
+    openCashDrawer: !!design.cash_drawer,
+    drawerCmds: design.drawer_cmds || '1B,70,00,3C,FF',
+    printMode: design.print_mode || 'Text'
   };
 }

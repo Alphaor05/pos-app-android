@@ -35,7 +35,7 @@ import {
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
 import { useCart, CartItem } from '@/context/CartContext';
-import { useBluetooth } from '@/context/BluetoothContext';
+import { usePrinter } from '@/context/PrinterContext';
 import { Product, DiscountPlan, PricingPlan } from '@/data/products';
 import Colors from '@/constants/colors';
 
@@ -208,7 +208,7 @@ const normalize = (val: string) => val ? val.trim().toLowerCase().replace(/[^a-z
 export default function POSScreen() {
   const { logout, employee, shopId } = useAuth();
   const { items, addItem, removeItem, updateQuantity, clearCart, total } = useCart();
-  const { connectedDevice, status: btStatus, printReceipt } = useBluetooth();
+  const { connectedDevice, status: printerStatus, printReceipt } = usePrinter();
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
 
@@ -720,7 +720,7 @@ export default function POSScreen() {
         // shopId is injected by BluetoothContext.printReceipt automatically
       });
 
-      if (!success && btStatus === 'connected') {
+      if (!success && printerStatus === 'connected') {
         // Only alert if printer is connected — otherwise it's expected to fail
         Alert.alert(
           'Printer Error',
@@ -963,28 +963,28 @@ export default function POSScreen() {
               </View>
             </View>
 
-            {btStatus === 'connected' && connectedDevice && (
+            {printerStatus === 'connected' && connectedDevice && (
               <View style={styles.printerBadge}>
                 <MaterialCommunityIcons name="printer-check" size={s(11)} color={C.success} />
                 <Text style={styles.printerBadgeText}>{connectedDevice.name}</Text>
               </View>
             )}
 
-            {btStatus === 'failed' && (
+            {printerStatus === 'failed' && (
               <View style={[styles.printerBadge, { backgroundColor: C.dangerDim, borderColor: C.danger }]}>
                 <MaterialCommunityIcons name="printer-alert" size={s(11)} color={C.danger} />
                 <Text style={[styles.printerBadgeText, { color: C.danger }]}>Printer Error</Text>
               </View>
             )}
 
-            {btStatus === 'bluetooth_off' && (
+            {printerStatus === 'bluetooth_off' && (
               <View style={[styles.printerBadge, { backgroundColor: C.warningDim, borderColor: C.warning || C.accent }]}>
                 <MaterialCommunityIcons name="bluetooth-off" size={s(11)} color={C.warning || C.accent} />
                 <Text style={[styles.printerBadgeText, { color: C.warning || C.accent }]}>Bluetooth Off</Text>
               </View>
             )}
 
-            {(!connectedDevice || (btStatus !== 'connected' && btStatus !== 'failed' && btStatus !== 'bluetooth_off')) && (
+            {(!connectedDevice || (printerStatus !== 'connected' && printerStatus !== 'failed' && printerStatus !== 'bluetooth_off')) && (
               <View style={[styles.printerBadge, { backgroundColor: C.textMuted + '20', borderColor: C.textMuted }]}>
                 <MaterialCommunityIcons name="printer-off" size={s(11)} color={C.textMuted} />
                 <Text style={[styles.printerBadgeText, { color: C.textMuted }]}>No Printer</Text>
