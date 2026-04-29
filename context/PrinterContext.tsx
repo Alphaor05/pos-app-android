@@ -312,19 +312,22 @@ export function PrinterProvider({ children }: { children: ReactNode }) {
    * To add a new printer the user must pair it via Android Bluetooth Settings first.
    */
   const startScan = async () => {
-    const hasPerms = await checkPermissions();
-    if (!hasPerms) {
-      Alert.alert(
-        'Bluetooth Permission Required',
-        'Please grant Bluetooth permission to list paired printers.',
-      );
-      return;
-    }
-
-    setIsScanning(true);
-    setStatus('scanning');
-
     try {
+      const hasPerms = await checkPermissions();
+      if (!hasPerms) {
+        Alert.alert(
+          'Bluetooth Permission Required',
+          'Nearby Devices permission is required to list paired printers. Please enable it in App Settings.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Settings', onPress: () => openSettings() }
+          ]
+        );
+        return;
+      }
+
+      setIsScanning(true);
+      setStatus('scanning');
       // Refresh paired devices from OS bonding table — zero scanning, zero location.
       await refreshPairedDevices();
     } catch (e) {
