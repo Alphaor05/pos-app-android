@@ -797,6 +797,27 @@ export async function queueAccessLog(log: Omit<OfflineAccessLog, 'id' | 'synced'
     throw err;
   }
 }
+export async function deductStockLocally(items: { product_id: string, quantity: number }[]): Promise<void> {
+  if (Platform.OS === 'web' || items.length === 0) return;
+  const localDb = getDb();
+  if (!localDb) return;
+
+  try {
+    await localDb.withTransactionAsync(async () => {
+      for (const item of items) {
+        // Use MAX(0, in_stock - ?) to ensure stock doesn't go negative
+        await localDb.runAsync(
+          `UPDATE products SET in_stock = MAX(0, in_stock - ?) WHERE id = ?;`,
+          [item.quantity, item.product_id]
+        );
+      }
+    });
+    console.debug(`[OfflineDB] Deducted stock for ${items.length} items.`);
+  } catch (err) {
+    console.error('[OfflineDB] deductStockLocally error:', err);
+    throw err;
+  }
+}
 
 export async function updateAccessLogLogout(id: string, logoutTime: string): Promise<void> {
   if (Platform.OS === 'web') return;
@@ -836,4 +857,27 @@ export async function markAccessLogSynced(id: string): Promise<void> {
     console.error('[OfflineDB] markAccessLogSynced error:', err);
     throw err;
   }
+}
+
+/**
+ * Calculates total quantity sold per product for all un-synced sales.
+ */
+export async function getPendingDeductions(): Promise<Record<string, number>> {
+  const pending = await getPendingSales();
+  const deductions: Record<string, number> = {};
+  
+  for (const sale of pending) {
+    const items = sale.data?.items;
+    if (Array.isArray(items)) {
+      for (const item of items) {
+        const pid = item.product_id || item.id;
+        const qty = Number(item.quantity || 0);
+        if (pid) {
+          deductions[pid] = (deductions[pid] || 0) + qty;
+        }
+      }
+    }
+  }
+  
+  return deductions;
 }

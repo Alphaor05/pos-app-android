@@ -94,22 +94,32 @@ async function fetchProductsFromSupabase(shopId: string | null): Promise<Product
       category: p.category,
       image_url: p.image_url,
       sku: p.code || p.sku,
-      // If no stock record exists for this shop, treat as 0 (not stocked here yet).
-      // The offline fallback separately defaults to 9999 to keep cached products usable.
       inStock: shopData ? Number(shopData.in_stock ?? 0) : 0,
     };
   });
 
-  // Sync to local DB
+  // NEW: Account for pending local deductions to keep UI consistent until sync
+  let finalProducts = merged as Product[];
   try {
-    const { clearProducts, bulkAddProducts } = await import('@/lib/offlineDb');
+    const { getPendingDeductions, clearProducts, bulkAddProducts } = await import('@/lib/offlineDb');
+    const pendingDeductions = await getPendingDeductions();
+    
+    finalProducts = merged.map(p => {
+      const pendingQty = pendingDeductions[p.id] || 0;
+      return {
+        ...p,
+        inStock: Math.max(0, (p.inStock || 0) - pendingQty)
+      };
+    });
+
+    // Sync to local DB
     await clearProducts();
-    await bulkAddProducts(merged.map(p => ({ ...p as any, in_stock: (p as any).inStock ?? 9999 })));
+    await bulkAddProducts(finalProducts.map(p => ({ ...p as any, in_stock: p.inStock })));
   } catch (e) {
     console.warn('Sync products error:', e);
   }
 
-  return merged as Product[];
+  return finalProducts;
 }
 
 async function fetchDiscountPlansFromSupabase(shopId: string | null): Promise<DiscountPlan[]> {
@@ -646,11 +656,27 @@ export default function POSScreen() {
     };
 
     try {
-      const { queueSale } = await import('@/lib/offlineDb');
+      const { queueSale, deductStockLocally } = await import('@/lib/offlineDb');
       await queueSale(saleRecord);
+      
+      // Deduct stock locally immediately for responsive UI
+      await deductStockLocally(receiptItems);
+      
+      // OPTIMISTIC UPDATE: Update the local cache immediately so the UI reflects the change
+      queryClient.setQueryData(['supabase-products', shopId], (old: Product[] | undefined) => {
+        if (!old) return old;
+        return old.map(p => {
+          const soldItem = receiptItems.find(i => i.product_id === p.id);
+          if (soldItem) {
+            return { ...p, inStock: Math.max(0, (p.inStock || 0) - soldItem.quantity) };
+          }
+          return p;
+        });
+      });
+      
       refreshPending();
     } catch (e) {
-      console.warn('failed to queue sale', e);
+      console.warn('failed to queue sale or deduct stock', e);
     }
 
     if (supabase && shopId) {
@@ -686,7 +712,15 @@ export default function POSScreen() {
           const { error: fallbackError } = await insertTransactionReceipt(receiptFallback);
           if (fallbackError) {
             console.error('Fallback transaction_receipts insert failed', fallbackError);
+          } else {
+            // Even if fallback worked, mark it synced so we don't try again
+            const { markSaleSynced } = await import('@/lib/offlineDb');
+            await markSaleSynced(orderId);
           }
+        } else {
+          // RPC success! Mark sale as synced locally immediately to avoid double-deduction risk
+          const { markSaleSynced } = await import('@/lib/offlineDb');
+          await markSaleSynced(orderId);
         }
       } catch (e) {
         console.warn('pos_sale RPC handling exception', e);
