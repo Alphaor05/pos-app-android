@@ -64,8 +64,9 @@ function buildReceiptSync(payload, design = DEFAULT_DESIGN) {
   const lines     = [];
 
   // HEADER
-  if (design.header) {
-    design.header.split('\n').forEach(l => lines.push(`[C]<b>${l.trim()}</b>`));
+  const header = design.header || DEFAULT_DESIGN.header;
+  if (header) {
+    header.split('\n').forEach(l => lines.push(`[C]<b>${l.trim()}</b>`));
   }
   lines.push(`[C]${fmtDate(payload.createdAt)}`);
   lines.push(`[C]${divider}`);
@@ -106,8 +107,9 @@ function buildReceiptSync(payload, design = DEFAULT_DESIGN) {
   lines.push(`[C]${divider}`);
 
   // FOOTER
-  if (design.footer) {
-    design.footer.split('\n').forEach(l => lines.push(`[C]${l.trim()}`));
+  const footer = design.footer || DEFAULT_DESIGN.footer;
+  if (footer) {
+    footer.split('\n').forEach(l => lines.push(`[C]${l.trim()}`));
   }
   lines.push('');
   lines.push('');
@@ -174,6 +176,18 @@ const testCases = [
       createdAt: new Date().toISOString(),
     },
     design: { ...DEFAULT_DESIGN, receipt_size: '80mm' },
+  },
+  {
+    label: 'Design with null header/footer (fallback test)',
+    payload: {
+      orderId: 'FALLBACK1',
+      items: [{ name: 'Fallback Item', quantity: 1, price: 5.00 }],
+      subtotal: 5,
+      discount: 0,
+      total: 5,
+      createdAt: new Date().toISOString(),
+    },
+    design: { ...DEFAULT_DESIGN, header: null, footer: undefined },
   },
 ];
 

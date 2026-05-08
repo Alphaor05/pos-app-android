@@ -103,8 +103,9 @@ export async function buildReceipt(payload: ReceiptPayload): Promise<{
     lines.push(`[C]${divider}`);
   }
 
-  if (design.header) {
-    design.header.split('\n').forEach(line => {
+  const header = design.header || DEFAULT_DESIGN.header;
+  if (header) {
+    header.split('\n').forEach(line => {
       lines.push(`[C]<b>${line.trim()}</b>`);
     });
   }
@@ -159,8 +160,9 @@ export async function buildReceipt(payload: ReceiptPayload): Promise<{
   lines.push(`[C]${divider}`);
 
   // ── FOOTER ──
-  if (design.footer) {
-    design.footer.split('\n').forEach(line => {
+  const footer = design.footer || DEFAULT_DESIGN.footer;
+  if (footer) {
+    footer.split('\n').forEach(line => {
       lines.push(`[C]${line.trim()}`);
     });
   }
