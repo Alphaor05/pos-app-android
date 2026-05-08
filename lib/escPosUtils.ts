@@ -34,27 +34,37 @@ export function formatRow3(qty: string, name: string, price: string, width: numb
 /**
  * Formats a 4-column row (Qty, Item, Price, SubT)
  */
-export function formatRow4(qty: string, item: string, price: string, subt: string, width: number = 32): string {
-  const w1 = 2; // Qty
+export function formatRow4(qty: string, item: string, price: string, subt: string, width: number = 32): string[] {
+  const w1 = 3; // Qty
   const w3 = 7; // Price
   const w4 = 7; // SubT
   // Calculate remaining width for item name, accounting for 3 spaces between columns
   const w2 = width - w1 - w3 - w4 - 3; // Item Name (remaining space)
 
-  // Ensure widths are not negative
   const actual_w1 = Math.max(0, w1);
   const actual_w2 = Math.max(0, w2);
   const actual_w3 = Math.max(0, w3);
   const actual_w4 = Math.max(0, w4);
 
-  // Format each column, truncating if necessary and padding
-  const s1 = qty.toString().padEnd(actual_w1).slice(0, actual_w1);
-  const s2 = item.toString().padEnd(actual_w2).slice(0, actual_w2);
-  const s3 = price.toString().padStart(actual_w3).slice(0, actual_w3);
-  const s4 = subt.toString().padStart(actual_w4).slice(0, actual_w4);
+  const nameStr = item.toString();
+  const nameChunks: string[] = [];
+  
+  if (nameStr.length <= actual_w2) {
+    nameChunks.push(nameStr);
+  } else {
+    // Simple wrapping by character
+    for (let i = 0; i < nameStr.length; i += actual_w2) {
+      nameChunks.push(nameStr.substring(i, i + actual_w2));
+    }
+  }
 
-  // Join with single spaces between columns
-  return `${s1} ${s2} ${s3} ${s4}`;
+  return nameChunks.map((chunk, i) => {
+    const s1 = (i === 0 ? qty : "").toString().padEnd(actual_w1).slice(0, actual_w1);
+    const s2 = chunk.padEnd(actual_w2);
+    const s3 = (i === 0 ? price : "").toString().padStart(actual_w3).slice(0, actual_w3);
+    const s4 = (i === 0 ? subt : "").toString().padStart(actual_w4).slice(0, actual_w4);
+    return `${s1} ${s2} ${s3} ${s4}`;
+  });
 }
 
 /**

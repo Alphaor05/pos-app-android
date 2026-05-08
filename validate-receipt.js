@@ -6,8 +6,8 @@
 
 // ─── Stubs ────────────────────────────────────────────────────────────────────
 const DEFAULT_DESIGN = {
-  header: 'CRUNCHNUM POS\nThank you for shopping with us!',
-  footer: 'All sales are final.\nKeep this receipt for your records.',
+  header: 'Shaloam Distributors\nMasvingo\nCell: 0772816016',
+  footer: 'Thank You!\nPowered by CrunchNum',
   receipt_size: '58mm',
 };
 
@@ -27,6 +27,37 @@ function fmtDate(iso) {
 }
 
 // ─── Builder ──────────────────────────────────────────────────────────────────
+function formatRow4(qty, item, price, subt, width = 32) {
+  const w1 = 3; // Qty
+  const w3 = 7; // Price
+  const w4 = 7; // SubT
+  const w2 = width - w1 - w3 - w4 - 3; // Item Name (remaining space)
+
+  const actual_w1 = Math.max(0, w1);
+  const actual_w2 = Math.max(0, w2);
+  const actual_w3 = Math.max(0, w3);
+  const actual_w4 = Math.max(0, w4);
+
+  const nameStr = item.toString();
+  const nameChunks = [];
+  
+  if (nameStr.length <= actual_w2) {
+    nameChunks.push(nameStr);
+  } else {
+    for (let i = 0; i < nameStr.length; i += actual_w2) {
+      nameChunks.push(nameStr.substring(i, i + actual_w2));
+    }
+  }
+
+  return nameChunks.map((chunk, i) => {
+    const s1 = (i === 0 ? qty : "").toString().padEnd(actual_w1).slice(0, actual_w1);
+    const s2 = chunk.padEnd(actual_w2);
+    const s3 = (i === 0 ? price : "").toString().padStart(actual_w3).slice(0, actual_w3);
+    const s4 = (i === 0 ? subt : "").toString().padStart(actual_w4).slice(0, actual_w4);
+    return `${s1} ${s2} ${s3} ${s4}`;
+  });
+}
+
 function buildReceiptSync(payload, design = DEFAULT_DESIGN) {
   const lineWidth = design.receipt_size === '80mm' ? 48 : 32;
   const divider   = '-'.repeat(lineWidth);
@@ -45,7 +76,9 @@ function buildReceiptSync(payload, design = DEFAULT_DESIGN) {
   lines.push(`[C]${divider}`);
 
   // ITEMS HEADER
-  lines.push(`[L]<b>Item</b>[R]<b>Amt</b>`);
+  formatRow4('Qty', 'Item', 'Price', 'SubT', lineWidth).forEach(ln => {
+    lines.push(`[L]<b>${ln}</b>`);
+  });
   lines.push(`[C]${divider}`);
 
   // ITEMS
@@ -53,18 +86,22 @@ function buildReceiptSync(payload, design = DEFAULT_DESIGN) {
   for (const item of payload.items) {
     totalQty += item.quantity;
     const lineTotal = item.quantity * item.price;
-    lines.push(`[L]${item.name.slice(0, lineWidth - 1)}`);
-    lines.push(`[L]  ${item.quantity} x ${fmtPrice(item.price)}[R]${fmtPrice(lineTotal)}`);
+    formatRow4(
+      item.quantity.toString(),
+      item.name,
+      item.price.toFixed(2),
+      lineTotal.toFixed(2),
+      lineWidth
+    ).forEach(ln => lines.push(`[L]${ln}`));
   }
   lines.push(`[C]${divider}`);
 
   // TOTALS
-  lines.push(`[L]Items:[R]${totalQty}`);
   if (payload.discount && payload.discount > 0) {
     lines.push(`[L]Subtotal:[R]${fmtPrice(payload.subtotal)}`);
     lines.push(`[L]Discount:[R]-${fmtPrice(payload.discount)}`);
   }
-  lines.push(`[L]<b><font size='big'>TOTAL:</font></b>[R]<b><font size='big'>${fmtPrice(payload.total)}</font></b>`);
+  lines.push(`[L]<b>TOTAL:</b>[R]<b>${fmtPrice(payload.total)}</b>`);
   if (payload.paymentMethod) lines.push(`[L]Payment:[R]${payload.paymentMethod}`);
   lines.push(`[C]${divider}`);
 

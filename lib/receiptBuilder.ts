@@ -62,8 +62,8 @@ function fmtDate(iso?: string): string {
 // ─── Default design (fallback if no offline design row exists) ─────────────────
 
 const DEFAULT_DESIGN: Omit<ReceiptDesignRecord, 'id' | 'shop_id'> = {
-  header: 'THANK YOU FOR SHOPPING',
-  footer: 'Please keep this receipt for your records.\nWe appreciate your business!',
+  header: 'Shaloam Distributors\nMasvingo\nCell: 0772816016',
+  footer: 'Thank You!\nPowered by CrunchNum',
   receipt_size: '58mm',
 };
 
@@ -120,7 +120,9 @@ export async function buildReceipt(payload: ReceiptPayload): Promise<{
   lines.push(`[C]${divider}`);
 
   // ── ITEMS HEADER ──
-  lines.push(`[L]<b>${formatRow4('Qty', 'Item', 'Price', 'SubT', lineWidth)}</b>`);
+  formatRow4('Qty', 'Item', 'Price', 'SubT', lineWidth).forEach(ln => {
+    lines.push(`[L]<b>${ln}</b>`);
+  });
   lines.push(`[C]${divider}`);
 
   // ── ITEMS ──
@@ -130,13 +132,13 @@ export async function buildReceipt(payload: ReceiptPayload): Promise<{
     const lineTotal = item.quantity * item.price;
     
     // Use formatRow4 for the aligned 4-column layout
-    lines.push(`[L]${formatRow4(
+    formatRow4(
       item.quantity.toString(),
       item.name,
       item.price.toFixed(2),
       lineTotal.toFixed(2),
       lineWidth
-    )}`);
+    ).forEach(ln => lines.push(`[L]${ln}`));
   }
 
   lines.push(`[C]${divider}`);
