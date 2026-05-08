@@ -2,7 +2,7 @@
   "expo": {
     "name": "CrunchNum",
     "slug": "crunch-num",
-    "version": "1.4.1",
+    "version": "1.4.2",
     "orientation": "landscape",
     "icon": "./assets/images/CrunchNumIcon.png",
     "scheme": "crunch-num",

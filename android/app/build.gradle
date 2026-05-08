@@ -86,15 +86,15 @@ android {
     ndkVersion rootProject.ext.ndkVersion
 
     buildToolsVersion rootProject.ext.buildToolsVersion
-    compileSdk rootProject.ext.compileSdkVersion
+    compileSdk 34 // rootProject.ext.compileSdkVersion
 
     namespace 'com.alphaor05.crunchnum'
     defaultConfig {
         applicationId 'com.alphaor05.crunchnum'
-        minSdkVersion rootProject.ext.minSdkVersion
-        targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 5
-        versionName "1.4.1"
+        minSdkVersion 21 // rootProject.ext.minSdkVersion
+        targetSdkVersion 34 // rootProject.ext.targetSdkVersion
+        versionCode 6
+        versionName "1.4.2"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
     }
