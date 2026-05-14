@@ -653,6 +653,8 @@ export default function POSScreen() {
       shopId,
       customerName: customerName.trim() || null,
       paymentMethod: selectedPaymentMethod,
+      employeeId: employee?.employee_id || null,
+      employeeName: employee ? `${employee.first_name ?? ''} ${employee.last_name ?? ''}`.trim() : null,
     };
 
     try {
@@ -690,6 +692,7 @@ export default function POSScreen() {
           p_payment_method: selectedPaymentMethod,
           p_employee_id: employee?.employee_id ?? null,
           p_customer_name: customerName.trim() || null,
+          p_created_at: saleRecord.createdAt,
         });
 
         if (error) {
@@ -704,9 +707,8 @@ export default function POSScreen() {
             tax: 0,
             total: grandTotal,
             payment_method: selectedPaymentMethod,
-            employee_id: employee?.employee_id || null,
             customer_name: customerName.trim() || null,
-            created_at: new Date().toISOString(),
+            created_at: saleRecord.createdAt,
           };
 
           const { error: fallbackError } = await insertTransactionReceipt(receiptFallback);

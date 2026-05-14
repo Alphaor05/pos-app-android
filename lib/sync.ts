@@ -70,31 +70,14 @@ export async function syncSalesQueue() {
             p_order_id: rec.data.orderId || rec.data.order_id,
             p_total_amount: rec.data.total || rec.data.amount || 0,
             p_payment_method: rec.data.paymentMethod || rec.data.payment_method || 'Cash',
-            p_employee_id: empId,
+            p_employee_id: rec.data.employeeId || rec.data.employee_id || empId,
             p_customer_name: rec.data.customerName || null,
+            p_created_at: rec.data.createdAt || rec.data.created_at || rec.created_at,
           });
 
           if (error) {
-            console.warn('syncSalesQueue: handle_pos_sale RPC failed', rec.id, error);
-            const receiptFallback = {
-              order_id: rec.data.orderId || rec.data.order_id,
-              shop_id: saleShopId,
-              items: JSON.stringify(rec.data.items),
-              subtotal: rec.data.subtotal || rec.data.total || 0,
-              discount: rec.data.discount || 0,
-              tax: rec.data.tax || 0,
-              total: rec.data.total || rec.data.amount || 0,
-              payment_method: rec.data.paymentMethod || rec.data.payment_method || 'Cash',
-              employee_id: empId,
-              customer_name: rec.data.customerName || null,
-              created_at: rec.data.createdAt || new Date().toISOString(),
-            };
-            const { error: fallbackError } = await insertTransactionReceipt(receiptFallback);
-            if (fallbackError) {
-              console.error('syncSalesQueue: fallback transaction_receipts insert failed', rec.id, fallbackError);
-            } else {
-              await markSaleSynced(rec.id);
-            }
+            console.error('syncSalesQueue: handle_pos_sale RPC failed, skipping fallback', rec.id, error);
+            // No fallback — the RPC handles all inserts atomically.
           } else {
             await markSaleSynced(rec.id);
           }
