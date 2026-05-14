@@ -34,9 +34,6 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Expo Prebuild
-        run: npx expo prebuild --platform android --no-install
-
       - name: Build Android Debug
         working-directory: android
         run: |
