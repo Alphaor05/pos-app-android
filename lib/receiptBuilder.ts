@@ -62,7 +62,7 @@ function fmtDate(iso?: string): string {
 // ─── Default design (fallback if no offline design row exists) ─────────────────
 
 const DEFAULT_DESIGN: Omit<ReceiptDesignRecord, 'id' | 'shop_id'> = {
-  header: 'Shaloam Distributors\nMasvingo\nCell: 0772816016',
+  header: 'Shaloam Distributors\nMasvingo',
   footer: 'Thank You!\nPowered by CrunchNum',
   receipt_size: '58mm',
 };
@@ -106,7 +106,12 @@ export async function buildReceipt(payload: ReceiptPayload): Promise<{
   const header = design.header || DEFAULT_DESIGN.header;
   if (header) {
     header.split('\n').forEach(line => {
-      lines.push(`[C]<b>${line.trim()}</b>`);
+      const trimmed = line.trim();
+      // Skip lines that look like phone numbers (e.g. "Cell: 0772816016")
+      const isPhone = /(?:Cell|Tel|Phone|Mobile|WhatsApp)[:\s]*[\d\s+\-()]{7,}/i.test(trimmed);
+      if (trimmed && !isPhone) {
+        lines.push(`[C]<b>${trimmed}</b>`);
+      }
     });
   }
 

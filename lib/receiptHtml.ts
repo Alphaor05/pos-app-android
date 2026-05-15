@@ -49,7 +49,7 @@ export function generateReceiptHtml(receipt: ReceiptData): string {
   // Default to 58mm if not specified (approx 200px equivalent, but web browsers usually scale. We'll set max-width for printed ticket look)
   const isWide = receipt.settings?.receiptSize?.includes('80mm');
   const maxWidth = isWide ? '300px' : '200px';
-  const headerHtml = receipt.settings?.header?.replace(/\\n|\n/g, '<br/>') || 'Shaloam Distributors<br/>123 Main Street<br/>Masvingo, Zimbabwe<br/>Tel: +1 234 567 890';
+  const headerHtml = receipt.settings?.header?.replace(/\\n|\n/g, '<br/>') || 'Shaloam Distributors<br/>123 Main Street<br/>Masvingo, Zimbabwe';
   const footerHtml = receipt.settings?.footer?.replace(/\\n|\n/g, '<br/>') || 'Thank you for shopping<br/>with us!<br/>Please come again.';
 
   return `

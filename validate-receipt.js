@@ -6,7 +6,7 @@
 
 // ─── Stubs ────────────────────────────────────────────────────────────────────
 const DEFAULT_DESIGN = {
-  header: 'Shaloam Distributors\nMasvingo\nCell: 0772816016',
+  header: 'Shaloam Distributors\nMasvingo',
   footer: 'Thank You!\nPowered by CrunchNum',
   receipt_size: '58mm',
 };
@@ -66,7 +66,13 @@ function buildReceiptSync(payload, design = DEFAULT_DESIGN) {
   // HEADER
   const header = design.header || DEFAULT_DESIGN.header;
   if (header) {
-    header.split('\n').forEach(l => lines.push(`[C]<b>${l.trim()}</b>`));
+    header.split('\n').forEach(l => {
+      const trimmed = l.trim();
+      const isPhone = /(?:Cell|Tel|Phone|Mobile|WhatsApp)[:\s]*[\d\s+\-()]{7,}/i.test(trimmed);
+      if (trimmed && !isPhone) {
+        lines.push(`[C]<b>${trimmed}</b>`);
+      }
+    });
   }
   lines.push(`[C]${fmtDate(payload.createdAt)}`);
   lines.push(`[C]${divider}`);
