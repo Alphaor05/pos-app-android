@@ -682,54 +682,11 @@ export default function POSScreen() {
     }
 
     if (supabase && shopId) {
-      try {
-        const { handlePosSale, insertTransactionReceipt } = await import('@/lib/supabase');
-        const { error } = await handlePosSale({
-          p_shop_id: shopId,
-          p_items: receiptItems,
-          p_order_id: orderId,
-          p_total_amount: Number(grandTotal),
-          p_payment_method: selectedPaymentMethod,
-          p_employee_id: employee?.employee_id ?? null,
-          p_customer_name: customerName.trim() || null,
-          p_created_at: saleRecord.createdAt,
-        });
-
-        if (error) {
-          console.warn('pos_sale RPC error (from handlePosSale)', error);
-          // fallback: insert record to transaction_receipts table directly
-          const receiptFallback = {
-            order_id: orderId,
-            shop_id: shopId,
-            items: JSON.stringify(receiptItems),
-            subtotal: total,
-            discount: totalDiscountInclAuto,
-            tax: 0,
-            total: grandTotal,
-            payment_method: selectedPaymentMethod,
-            customer_name: customerName.trim() || null,
-            created_at: saleRecord.createdAt,
-          };
-
-          const { error: fallbackError } = await insertTransactionReceipt(receiptFallback);
-          if (fallbackError) {
-            console.error('Fallback transaction_receipts insert failed', fallbackError);
-          } else {
-            // Even if fallback worked, mark it synced so we don't try again
-            const { markSaleSynced } = await import('@/lib/offlineDb');
-            await markSaleSynced(orderId);
-          }
-        } else {
-          // RPC success! Mark sale as synced locally immediately to avoid double-deduction risk
-          const { markSaleSynced } = await import('@/lib/offlineDb');
-          await markSaleSynced(orderId);
-        }
-      } catch (e) {
-        console.warn('pos_sale RPC handling exception', e);
-      }
+      // We rely on syncSalesQueue to handle the server communication.
+      // This prevents race conditions where handleCharge and syncSalesQueue
+      // both try to sync the same sale at the same time.
+      import('@/lib/sync').then(({ syncSalesQueue }) => syncSalesQueue());
     }
-
-    import('@/lib/sync').then(({ syncSalesQueue }) => syncSalesQueue());
 
     const { logActivity } = await import('@/lib/activityLogger');
     await logActivity('sale_complete', employee?.employee_id || null, {

@@ -73,7 +73,7 @@ export function CartProvider({ children }: { children: ReactNode }) {
   const clearCart = () => setItems([]);
 
   const total = useMemo(
-    () => items.reduce((sum, i) => sum + i.product.price * i.quantity, 0),
+    () => Math.round(items.reduce((sum, i) => sum + i.product.price * i.quantity, 0) * 100) / 100,
     [items]
   );
 
