@@ -11,7 +11,7 @@ export type ActionType = 'login_success' | 'login_failure' | 'transaction_cancel
 export async function logActivity(
     actionType: ActionType,
     employeeId: string | null,
-    metadata: { amount?: number; discount?: number } = {}
+    metadata: { amount?: number; discount?: number; order_id?: string } = {}
 ) {
     try {
         // 1. Always queue locally first
@@ -20,6 +20,7 @@ export async function logActivity(
             action_type: actionType,
             amount: metadata.amount,
             discount: metadata.discount,
+            metadata: metadata.order_id ? JSON.stringify({ order_id: metadata.order_id }) : null,
             created_at: new Date().toISOString()
         });
 

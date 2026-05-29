@@ -802,6 +802,22 @@ export async function getEmployeeByPin(pin: string): Promise<EmployeeRecord | nu
   }
 }
 
+export async function getEmployeeById(id: string): Promise<EmployeeRecord | null> {
+  if (Platform.OS === 'web') return null;
+  const localDb = getDb();
+  if (!localDb) return null;
+  try {
+    const row = await localDb.getFirstAsync(
+      `SELECT * FROM employees WHERE employee_id = ? LIMIT 1;`,
+      [id]
+    );
+    return (row as EmployeeRecord) || null;
+  } catch (e) {
+    console.warn('[OfflineDB] getEmployeeById error:', e);
+    return null;
+  }
+}
+
 export async function clearEmployees(): Promise<void> {
   if (Platform.OS === 'web') return;
   const localDb = getDb();

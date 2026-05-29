@@ -692,6 +692,7 @@ export default function POSScreen() {
     await logActivity('sale_complete', employee?.employee_id || null, {
       amount: grandTotal,
       discount: manualDiscountAmount + autoDiscountTotal,
+      order_id: orderId
     });
 
     try {
