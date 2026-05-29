@@ -6,6 +6,7 @@ import { router } from 'expo-router';
 import Colors from '@/constants/colors';
 import { SaleRecord, getAllSales } from '@/lib/offlineDb';
 import { syncSalesQueue } from '@/lib/sync';
+import { useAuth } from '@/context/AuthContext';
 
 const C = Colors.dark;
 
@@ -13,6 +14,9 @@ export default function SalesScreen() {
   const insets = useSafeAreaInsets();
   const topPad = Platform.OS === 'web' ? 67 : insets.top;
   const botPad = Platform.OS === 'web' ? 34 : insets.bottom;
+
+  const { employee } = useAuth();
+  const isAdmin = employee?.role === 'Admin';
 
   const [sales, setSales] = useState<SaleRecord[]>([]);
   const [refreshing, setRefreshing] = useState(false);
@@ -36,14 +40,36 @@ export default function SalesScreen() {
   const renderItem = ({ item }: { item: SaleRecord }) => {
     const date = new Date(item.created_at);
     const dateStr = date.toLocaleString();
+    const isHealed = item.synced && (item.sync_attempts || 0) > 1;
+    const isFailed = !item.synced && (item.sync_attempts || 0) > 0;
+
     return (
-      <View style={styles.row}>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.rowId}>{item.id.slice(0, 8)}</Text>
-          <Text style={styles.rowDate}>{dateStr}</Text>
+      <View style={styles.rowContainer}>
+        <View style={styles.row}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.rowId}>{item.id.slice(0, 8)} - ${item.data?.total || '0'}</Text>
+            <Text style={styles.rowDate}>{dateStr}</Text>
+          </View>
+          <View style={{ alignItems: 'flex-end' }}>
+            <Text style={[
+              styles.rowStatus, 
+              item.synced ? (isHealed ? styles.healed : styles.synced) : (isFailed ? styles.failed : styles.pending)
+            ]}>
+              {item.synced ? (isHealed ? 'Self-Healed' : 'Synced') : (isFailed ? 'Retrying...' : 'Pending')}
+            </Text>
+            {isAdmin && (item.sync_attempts || 0) > 0 && (
+              <Text style={styles.attemptsText}>Try #{item.sync_attempts}</Text>
+            )}
+          </View>
         </View>
-        <Text style={[styles.rowStatus, item.synced ? styles.synced : styles.pending]}
-        >{item.synced ? 'Synced' : 'Pending'}</Text>
+        
+        {isAdmin && !item.synced && (item as any).last_error && (
+          <View style={styles.errorBox}>
+            <Text style={styles.errorText} numberOfLines={2}>
+              {(item as any).last_error}
+            </Text>
+          </View>
+        )}
       </View>
     );
   };
@@ -146,8 +172,39 @@ const styles = StyleSheet.create({
     color: C.success,
   },
   pending: {
+    backgroundColor: C.card,
+    color: C.textMuted,
+  },
+  failed: {
     backgroundColor: C.warningDim,
     color: C.warning,
+  },
+  healed: {
+    backgroundColor: C.accentDim,
+    color: C.accentLight,
+  },
+  rowContainer: {
+    borderBottomWidth: 1,
+    borderBottomColor: C.border,
+    paddingVertical: 4,
+  },
+  attemptsText: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 10,
+    color: C.textMuted,
+    marginTop: 2,
+  },
+  errorBox: {
+    backgroundColor: 'rgba(255, 0, 0, 0.1)',
+    borderRadius: 6,
+    padding: 8,
+    marginTop: 4,
+    marginBottom: 8,
+  },
+  errorText: {
+    color: C.danger,
+    fontSize: 11,
+    fontFamily: 'Inter_400Regular',
   },
   empty: {
     padding: 20,

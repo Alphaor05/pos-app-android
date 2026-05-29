@@ -18,6 +18,8 @@ export interface SaleRecord {
   // originated the transaction.
   data: Record<string, any>;
   synced: boolean;
+  sync_attempts?: number;
+  last_error?: string | null;
   created_at: string;
 }
 
@@ -206,9 +208,25 @@ export function initDb() {
         id TEXT PRIMARY KEY,
         data TEXT,
         synced INTEGER DEFAULT 0,
+        sync_attempts INTEGER DEFAULT 0,
+        last_error TEXT,
         created_at TEXT
       );
     `);
+
+    // Migration for sales_queue
+    try {
+      const salesTableInfo = localDb.getAllSync(`PRAGMA table_info(sales_queue);`);
+      const columns = salesTableInfo.map((c: any) => c.name);
+      if (!columns.includes('sync_attempts')) {
+        localDb.execSync(`ALTER TABLE sales_queue ADD COLUMN sync_attempts INTEGER DEFAULT 0;`);
+      }
+      if (!columns.includes('last_error')) {
+        localDb.execSync(`ALTER TABLE sales_queue ADD COLUMN last_error TEXT;`);
+      }
+    } catch (e) {
+      console.warn('Migration for sales_queue failed:', e);
+    }
 
     localDb.execSync(`
       CREATE TABLE IF NOT EXISTS activity_logs_queue (
@@ -418,6 +436,8 @@ export async function getPendingSales(): Promise<SaleRecord[]> {
       id: r.id,
       data: typeof r.data === 'string' ? JSON.parse(r.data) : r.data,
       synced: r.synced === 1,
+      sync_attempts: r.sync_attempts || 0,
+      last_error: r.last_error || null,
       created_at: r.created_at,
     }));
   } catch (err) {
@@ -440,6 +460,8 @@ export async function getAllSales(): Promise<SaleRecord[]> {
       id: r.id,
       data: typeof r.data === 'string' ? JSON.parse(r.data) : r.data,
       synced: r.synced === 1,
+      sync_attempts: r.sync_attempts || 0,
+      last_error: r.last_error || null,
       created_at: r.created_at,
     }));
   } catch (err) {
@@ -466,6 +488,19 @@ export async function markSaleSynced(id: string): Promise<void> {
   } catch (err) {
     console.error('[OfflineDB] markSaleSynced error:', err);
     throw err;
+  }
+}
+
+export async function updateSaleSyncProgress(id: string, attempts: number, error: string | null): Promise<void> {
+  const localDb = getDb();
+  if (!localDb) return;
+  try {
+    await localDb.runAsync(
+      `UPDATE sales_queue SET sync_attempts = ?, last_error = ? WHERE id = ?;`,
+      [attempts, error, id]
+    );
+  } catch (err) {
+    console.error('[OfflineDB] updateSaleSyncProgress error:', err);
   }
 }
 

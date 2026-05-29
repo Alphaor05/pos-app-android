@@ -1,7 +1,7 @@
 import { queueActivityLog } from './offlineDb';
 import { syncActivityLogsQueue } from './sync';
 
-export type ActionType = 'login_success' | 'login_failure' | 'transaction_cancelled' | 'transaction_void' | 'sale_complete';
+export type ActionType = 'login_success' | 'login_failure' | 'transaction_cancelled' | 'transaction_void' | 'sale_complete' | 'sync_failure';
 
 /**
  * Logs an activity. 

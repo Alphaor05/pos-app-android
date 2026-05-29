@@ -743,6 +743,11 @@ export default function POSScreen() {
         <View style={styles.topBarLeft}>
           <Pressable style={styles.topBarIconBtn} onPress={() => setSidebarOpen(v => !v)}>
             <Ionicons name="menu" size={s(22)} color={C.text} />
+            {pendingCount > 0 && (
+              <View style={styles.pendingBadge}>
+                <Text style={styles.pendingBadgeText}>{pendingCount}</Text>
+              </View>
+            )}
           </Pressable>
 
           <View style={styles.searchBox}>
@@ -762,6 +767,14 @@ export default function POSScreen() {
           </View>
         </View>
         <View style={styles.topBarRight}>
+          {pendingCount > 0 && (
+            <Pressable 
+              style={[styles.topBarIconBtn, { backgroundColor: C.warningDim }]} 
+              onPress={() => router.push('/sales')}
+            >
+              <MaterialCommunityIcons name="cloud-sync-outline" size={s(20)} color={C.warning} />
+            </Pressable>
+          )}
           <Pressable style={styles.topBarIconBtn} onPress={() => router.push('/settings')}>
             <Ionicons name="settings-outline" size={s(20)} color={C.textSecondary} />
           </Pressable>
@@ -777,7 +790,14 @@ export default function POSScreen() {
             <SidebarItem icon="view-grid-outline" label="Products" active styles={styles} s={s} />
             {employee?.role === 'Admin' && (
               <>
-                <SidebarItem icon="cart-outline" label="Sales" onPress={() => { setSidebarOpen(false); router.push('/sales'); }} styles={styles} s={s} />
+                <View style={{ position: 'relative' }}>
+                  <SidebarItem icon="cart-outline" label="Sales Queued" onPress={() => { setSidebarOpen(false); router.push('/sales'); }} styles={styles} s={s} />
+                  {pendingCount > 0 && (
+                    <View style={[styles.pendingBadge, { right: 16, top: 12 }]}>
+                      <Text style={styles.pendingBadgeText}>{pendingCount}</Text>
+                    </View>
+                  )}
+                </View>
                 <SidebarItem icon="chart-bar" label="Reports" styles={styles} s={s} />
                 <SidebarItem icon="account-multiple-outline" label="Customers" styles={styles} s={s} />
               </>

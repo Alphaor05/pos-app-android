@@ -9,7 +9,9 @@ import {
   bulkSaveEmployees,
   clearEmployees,
   getPendingAccessLogs,
-  markAccessLogSynced
+  markAccessLogSynced,
+  queueActivityLog,
+  updateSaleSyncProgress
 } from './offlineDb';
 import { supabase } from './supabase';
 import { getPosId } from './settings';
@@ -62,6 +64,10 @@ export async function syncSalesQueue() {
         const saleShopId = rec.data.shopId || rec.data.shop_id || posId;
 
         if (saleShopId) {
+          // Track attempt
+          const currentAttempts = (rec as any).sync_attempts || 0;
+          const nextAttempts = currentAttempts + 1;
+          
           // call POS sale RPC
           const { handlePosSale, insertTransactionReceipt } = await import('@/lib/supabase');
           const { error } = await handlePosSale({
@@ -76,18 +82,41 @@ export async function syncSalesQueue() {
           });
 
           if (error) {
-            console.error('syncSalesQueue: handle_pos_sale RPC failed, skipping fallback', rec.id, error);
-            // No fallback — the RPC handles all inserts atomically.
+            console.error('syncSalesQueue: handle_pos_sale RPC failed', rec.id, error);
+            
+            // SELF-HEALING: Update local DB with error info for admins
+            const errorMsg = (error as any)?.message || String(error);
+            await updateSaleSyncProgress(rec.id, nextAttempts, errorMsg);
+            
+            // Remote Logging
+            await queueActivityLog({
+              employee_id: rec.data.employeeId || empId || 'system',
+              action_type: 'sync_failure',
+              amount: rec.data.total || 0,
+              created_at: new Date().toISOString(),
+              metadata: JSON.stringify({ order_id: rec.id, error: errorMsg, attempts: nextAttempts })
+            });
           } else {
+            // SUCCESS
             await markSaleSynced(rec.id);
+            
+            // If it succeeded after failing before, log it as "healed"
+            if (currentAttempts > 0) {
+                await queueActivityLog({
+                    employee_id: rec.data.employeeId || empId || 'system',
+                    action_type: 'sale_complete', // or a custom 'sync_healed'
+                    amount: rec.data.total || 0,
+                    created_at: new Date().toISOString(),
+                    metadata: JSON.stringify({ order_id: rec.id, status: 'healed', previous_attempts: currentAttempts })
+                });
+            }
           }
         } else {
           console.warn('syncSalesQueue: No shop_id found for sale', rec.id, '. Keeping in queue.');
-          // We do NOT mark as synced here so it stays in the queue until a shop_id is available.
         }
       } catch (err) {
         console.warn('Failed to sync sale', rec.id, err);
-        // we leave it pending for next attempt
+        await updateSaleSyncProgress(rec.id, ((rec as any).sync_attempts || 0) + 1, String(err));
       }
     }
   } catch (e) {
