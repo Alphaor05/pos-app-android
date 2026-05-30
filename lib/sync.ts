@@ -23,18 +23,35 @@ let syncing = false;
 
 export function initSync() {
   // trigger on mount and whenever we regain connectivity
-  NetInfo.addEventListener((state: any) => {
+  const listener = NetInfo.addEventListener((state: any) => {
     if (state.isConnected) {
-      syncSalesQueue();
-      syncActivityLogsQueue();
-      syncEmployees();
-      syncAccessLogsQueue();
+      triggerAllSyncs();
     }
   });
-  syncSalesQueue();
-  syncActivityLogsQueue();
-  syncEmployees();
-  syncAccessLogsQueue();
+
+  // Run immediately
+  triggerAllSyncs();
+
+  // Periodic fallback: Catch missed events or stale connections every 2 minutes
+  const interval = setInterval(() => {
+    triggerAllSyncs();
+  }, 120000); 
+
+  return () => {
+    listener();
+    clearInterval(interval);
+  };
+}
+
+async function triggerAllSyncs() {
+  try {
+    await syncSalesQueue();
+    await syncActivityLogsQueue();
+    await syncEmployees();
+    await syncAccessLogsQueue();
+  } catch (e) {
+    console.warn('[Sync] triggerAllSyncs error:', e);
+  }
 }
 
 export async function syncSalesQueue() {
@@ -113,20 +130,27 @@ export async function syncSalesQueue() {
           });
 
           if (error) {
-            console.error('syncSalesQueue: handle_pos_sale RPC failed', rec.id, error);
-            
-            // SELF-HEALING: Update local DB with error info for admins
-            const errorMsg = (error as any)?.message || String(error);
-            await updateSaleSyncProgress(rec.id, nextAttempts, errorMsg);
-            
-            // Remote Logging
-            await queueActivityLog({
-              employee_id: rec.data.employeeId || empId || 'system',
-              action_type: 'sync_failure',
-              amount: rec.data.total || 0,
-              created_at: new Date().toISOString(),
-              metadata: JSON.stringify({ order_id: rec.id, error: errorMsg, attempts: nextAttempts })
-            });
+            const isDuplicate = (error as any)?.code === '23505' || 
+                              (error as any)?.message?.includes('duplicate key') ||
+                              (error as any)?.message?.includes('unique constraint');
+
+            if (isDuplicate) {
+              console.log(`[Sync] Sale ${rec.id} already exists on server, marking as synced.`);
+              await markSaleSynced(rec.id);
+            } else {
+              console.error('syncSalesQueue: handle_pos_sale RPC failed', rec.id, error);
+              
+              const errorMsg = (error as any)?.message || String(error);
+              await updateSaleSyncProgress(rec.id, nextAttempts, errorMsg);
+              
+              await queueActivityLog({
+                employee_id: rec.data.employeeId || empId || 'system',
+                action_type: 'sync_failure',
+                amount: rec.data.total || 0,
+                created_at: new Date().toISOString(),
+                metadata: JSON.stringify({ order_id: rec.id, error: errorMsg, attempts: nextAttempts })
+              });
+            }
           } else {
             // SUCCESS
             await markSaleSynced(rec.id);
@@ -166,8 +190,16 @@ export async function syncSalesQueue() {
              if (!error) {
                  await markSaleSynced(rec.id);
              } else {
-                 console.error('[Sync] Memory fallback sync failed', error);
-                 await updateSaleSyncProgress(rec.id, ((rec as any).sync_attempts || 0) + 1, (error as any).message);
+                const isDuplicate = (error as any)?.code === '23505' || 
+                                  (error as any)?.message?.includes('duplicate key') ||
+                                  (error as any)?.message?.includes('unique constraint');
+                if (isDuplicate) {
+                   console.log(`[Sync] Sale ${rec.id} already exists on server (fallback path), marking as synced.`);
+                   await markSaleSynced(rec.id);
+                } else {
+                   console.error('[Sync] Memory fallback sync failed', error);
+                   await updateSaleSyncProgress(rec.id, ((rec as any).sync_attempts || 0) + 1, (error as any).message);
+                }
              }
           } else {
             const errorMsg = 'Missing Shop ID and no fallback found';

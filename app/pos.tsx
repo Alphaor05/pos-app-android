@@ -233,6 +233,7 @@ export default function POSScreen() {
   const deferredSearch = useDeferredValue(search);
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [orderSuccess, setOrderSuccess] = useState(false);
+  const [isCharging, setIsCharging] = useState(false);
   const [discount, setDiscount] = useState('0');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -618,9 +619,11 @@ export default function POSScreen() {
   }, [queryClient, shopId]);
 
   const handleCharge = async () => {
-    if (items.length === 0) return;
+    if (items.length === 0 || isCharging) return;
+    setIsCharging(true);
     if (!shopId) {
       Alert.alert('Missing shop ID', 'Please set your shop/terminal in Settings before charging.');
+      setIsCharging(false);
       return;
     }
 
@@ -628,110 +631,135 @@ export default function POSScreen() {
     if (outOfStock.length > 0) {
       const names = outOfStock.map(i => i.product.name).join(', ');
       Alert.alert('Out of Stock', `Cannot complete sale — the following item(s) have no stock: ${names}`);
+      setIsCharging(false);
       return;
     }
 
-    if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    const orderId = Date.now().toString() + Math.random().toString(36).substr(2, 6);
-    const receiptItems = items.map(i => ({
-      product_id: i.product.id,
-      name: i.product.name,
-      quantity: i.quantity,
-      price: i.product.price,
-    }));
-
-    const totalDiscountInclAuto = manualDiscountAmount + autoDiscountTotal;
-
-    const saleRecord: any = {
-      orderId,
-      items: receiptItems,
-      subtotal: total,
-      discount: totalDiscountInclAuto,
-      tax: 0,
-      total: grandTotal,
-      createdAt: new Date().toISOString(),
-      shopId,
-      customerName: customerName.trim() || null,
-      paymentMethod: selectedPaymentMethod,
-      employeeId: employee?.employee_id || null,
-      employeeName: employee ? `${employee.first_name ?? ''} ${employee.last_name ?? ''}`.trim() : null,
-    };
+    let didScheduleReset = false;
 
     try {
-      const { queueSale, deductStockLocally } = await import('@/lib/offlineDb');
-      await queueSale(saleRecord);
-      
-      // Deduct stock locally immediately for responsive UI
-      await deductStockLocally(receiptItems);
-      
-      // OPTIMISTIC UPDATE: Update the local cache immediately so the UI reflects the change
-      queryClient.setQueryData(['supabase-products', shopId], (old: Product[] | undefined) => {
-        if (!old) return old;
-        return old.map(p => {
-          const soldItem = receiptItems.find(i => i.product_id === p.id);
-          if (soldItem) {
-            return { ...p, inStock: Math.max(0, (p.inStock || 0) - soldItem.quantity) };
-          }
-          return p;
-        });
-      });
-      
-      refreshPending();
-    } catch (e) {
-      console.warn('failed to queue sale or deduct stock', e);
-    }
+      if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      const orderId = Date.now().toString() + Math.random().toString(36).substr(2, 6);
+      const receiptItems = items.map(i => ({
+        product_id: i.product.id,
+        name: i.product.name,
+        quantity: i.quantity,
+        price: i.product.price,
+      }));
 
-    if (supabase && shopId) {
-      // We rely on syncSalesQueue to handle the server communication.
-      // This prevents race conditions where handleCharge and syncSalesQueue
-      // both try to sync the same sale at the same time.
-      import('@/lib/sync').then(({ syncSalesQueue }) => syncSalesQueue());
-    }
+      const totalDiscountInclAuto = manualDiscountAmount + autoDiscountTotal;
 
-    const { logActivity } = await import('@/lib/activityLogger');
-    await logActivity('sale_complete', employee?.employee_id || null, {
-      amount: grandTotal,
-      discount: manualDiscountAmount + autoDiscountTotal,
-      order_id: orderId
-    });
-
-    try {
-      const success = await printReceipt({
-        orderId: saleRecord.orderId,
-        items: saleRecord.items.map((i: any) => ({
-          name: i.name,
-          quantity: i.quantity,
-          price: i.price,
-        })),
-        subtotal: saleRecord.subtotal,
-        discount: saleRecord.discount,
-        total: saleRecord.total,
-        createdAt: saleRecord.createdAt,
+      const saleRecord: any = {
+        orderId,
+        items: receiptItems,
+        subtotal: total,
+        discount: totalDiscountInclAuto,
+        tax: 0,
+        total: grandTotal,
+        createdAt: new Date().toISOString(),
+        shopId,
+        customerName: customerName.trim() || null,
         paymentMethod: selectedPaymentMethod,
-        employeeName: employee
-          ? `${employee.first_name ?? ''} ${employee.last_name ?? ''}`.trim()
-          : 'Staff',
-        // shopId is injected by BluetoothContext.printReceipt automatically
-      });
+        employeeId: employee?.employee_id || null,
+        employeeName: employee ? `${employee.first_name ?? ''} ${employee.last_name ?? ''}`.trim() : null,
+      };
 
-      if (!success && printerStatus === 'connected') {
-        // Only alert if printer is connected — otherwise it's expected to fail
-        Alert.alert(
-          'Printer Error',
-          'Sale was saved successfully, but the receipt could not be printed.\nCheck your printer in Settings.',
-          [{ text: 'OK' }]
-        );
+      // Step 1: Queue the sale locally (critical — if this fails, abort)
+      let saleQueued = false;
+      try {
+        const { queueSale, deductStockLocally } = await import('@/lib/offlineDb');
+        await queueSale(saleRecord);
+        saleQueued = true;
+        
+        // Deduct stock locally immediately for responsive UI
+        await deductStockLocally(receiptItems);
+        
+        // OPTIMISTIC UPDATE: Update the local cache immediately so the UI reflects the change
+        queryClient.setQueryData(['supabase-products', shopId], (old: Product[] | undefined) => {
+          if (!old) return old;
+          return old.map(p => {
+            const soldItem = receiptItems.find(i => i.product_id === p.id);
+            if (soldItem) {
+              return { ...p, inStock: Math.max(0, (p.inStock || 0) - soldItem.quantity) };
+            }
+            return p;
+          });
+        });
+        
+        refreshPending();
+      } catch (e) {
+        console.warn('failed to queue sale or deduct stock', e);
+        if (!saleQueued) {
+          // Sale was never saved — alert the cashier and abort
+          Alert.alert('Sale Failed', 'Could not save the sale. Please try again.');
+          return;  // finally block will reset isCharging
+        }
       }
-    } catch (e) {
-      console.warn('[POS] Silent print failed:', e);
-    }
 
-    setOrderSuccess(true);
-    setTimeout(() => {
-      clearCart();
-      setCustomerName('');
-      setOrderSuccess(false);
-    }, 1800);
+      // Step 2: Trigger background sync (fire-and-forget, non-blocking)
+      if (supabase && shopId) {
+        import('@/lib/sync').then(({ syncSalesQueue }) => syncSalesQueue()).catch(() => {});
+      }
+
+      // Step 3: Log activity (non-critical, wrapped in try/catch)
+      try {
+        const { logActivity } = await import('@/lib/activityLogger');
+        await logActivity('sale_complete', employee?.employee_id || null, {
+          amount: grandTotal,
+          discount: manualDiscountAmount + autoDiscountTotal,
+          order_id: orderId
+        });
+      } catch (e) {
+        console.warn('[POS] Activity logging failed (non-critical):', e);
+      }
+
+      // Step 4: Print receipt (non-critical)
+      try {
+        const success = await printReceipt({
+          orderId: saleRecord.orderId,
+          items: saleRecord.items.map((i: any) => ({
+            name: i.name,
+            quantity: i.quantity,
+            price: i.price,
+          })),
+          subtotal: saleRecord.subtotal,
+          discount: saleRecord.discount,
+          total: saleRecord.total,
+          createdAt: saleRecord.createdAt,
+          paymentMethod: selectedPaymentMethod,
+          employeeName: employee
+            ? `${employee.first_name ?? ''} ${employee.last_name ?? ''}`.trim()
+            : 'Staff',
+          // shopId is injected by BluetoothContext.printReceipt automatically
+        });
+
+        if (!success && printerStatus === 'connected') {
+          Alert.alert(
+            'Printer Error',
+            'Sale was saved successfully, but the receipt could not be printed.\nCheck your printer in Settings.',
+            [{ text: 'OK' }]
+          );
+        }
+      } catch (e) {
+        console.warn('[POS] Silent print failed:', e);
+      }
+
+      // Step 5: Show success and reset cart
+      setOrderSuccess(true);
+      didScheduleReset = true;
+      setTimeout(() => {
+        clearCart();
+        setCustomerName('');
+        setOrderSuccess(false);
+        setIsCharging(false);
+      }, 1800);
+    } finally {
+      // Safety net: if we never reached the setTimeout (due to any throw or early return),
+      // ensure the button is always unlocked so the cashier isn't stuck.
+      if (!didScheduleReset) {
+        setIsCharging(false);
+      }
+    }
   };
 
   const numColumns = width < 768 ? 2 : width < 1200 ? 4 : 5;
@@ -1062,12 +1090,12 @@ export default function POSScreen() {
               <Pressable
                 style={[
                   styles.chargeBtn,
-                  (items.length === 0) && styles.chargeBtnDisabled,
+                  (items.length === 0 || isCharging) && styles.chargeBtnDisabled,
                   (!shopId && items.length > 0) && { opacity: 0.8 }, // Slight fade if shopId missing but items present
                   orderSuccess && styles.chargeBtnSuccess,
                 ]}
                 onPress={handleCharge}
-                disabled={items.length === 0}
+                disabled={items.length === 0 || isCharging}
               >
                 <Text style={styles.chargeBtnText}>
                   {orderSuccess ? 'OK!' : 'CHARGE'}
