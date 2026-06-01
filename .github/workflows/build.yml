@@ -63,25 +63,25 @@ jobs:
       - name: Rename and Prepare APK
         run: |
           mkdir -p build-output
-          cp android/app/build/outputs/apk/release/*.apk build-output/CrunchNum-v1.4.3.apk
+          cp android/app/build/outputs/apk/release/*.apk build-output/CrunchNum-v1.4.4.apk
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: CrunchNum-v1.4.3-APK
-          path: build-output/CrunchNum-v1.4.3.apk
+          name: CrunchNum-v1.4.4-APK
+          path: build-output/CrunchNum-v1.4.4.apk
 
       - name: Create GitHub Release
         if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
-          name: Latest Build (v1.4.3)
+          name: Latest Build (v1.4.4)
           body: |
             Automatic build from latest source code.
-            Version: 1.4.3
+            Version: 1.4.4
             Commit: ${{ github.sha }}
-          files: build-output/CrunchNum-v1.4.3.apk
+          files: build-output/CrunchNum-v1.4.4.apk
           draft: false
           prerelease: false
           make_latest: true

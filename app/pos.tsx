@@ -827,7 +827,13 @@ export default function POSScreen() {
                     </View>
                   )}
                 </View>
-                <SidebarItem icon="chart-bar" label="Reports" styles={styles} s={s} />
+                <SidebarItem 
+                  icon="chart-bar" 
+                  label="Reports" 
+                  onPress={() => { setSidebarOpen(false); router.push('/reports'); }}
+                  styles={styles} 
+                  s={s} 
+                />
                 <SidebarItem icon="account-multiple-outline" label="Customers" styles={styles} s={s} />
               </>
             )}
