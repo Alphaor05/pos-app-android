@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { View, Text, StyleSheet, FlatList, Pressable, Platform, RefreshControl, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, FlatList, Pressable, Platform, RefreshControl, ActivityIndicator, Alert } from 'react-native';
 import Animated, { 
   useSharedValue, 
   useAnimatedStyle, 
@@ -13,7 +13,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import Colors from '@/constants/colors';
-import { SaleRecord, getAllSales } from '@/lib/offlineDb';
+import { SaleRecord, getAllSales, deleteSaleFromQueue } from '@/lib/offlineDb';
 import { syncSalesQueue, syncSingleSale } from '@/lib/sync';
 import { useAuth } from '@/context/AuthContext';
 
@@ -126,6 +126,29 @@ export default function SalesScreen() {
     }
   };
 
+  const handleDeleteSale = async (id: string) => {
+    Alert.alert(
+      'Delete Sale',
+      'Are you sure you want to remove this sale from the local queue? This action cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { 
+          text: 'Delete', 
+          style: 'destructive',
+          onPress: async () => {
+             try {
+                await deleteSaleFromQueue(id);
+                load();
+                if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+             } catch (e) {
+                Alert.alert('Error', 'Failed to delete sale');
+             }
+          }
+        }
+      ]
+    );
+  };
+
   useEffect(() => {
     load();
   }, [load]);
@@ -168,6 +191,17 @@ export default function SalesScreen() {
                       <Text style={styles.retryText}>Retry</Text>
                     </>
                   )}
+                </Pressable>
+              )}
+              {isAdmin && !item.synced && (
+                <Pressable 
+                  onPress={() => handleDeleteSale(item.id)}
+                  style={({ pressed }) => [
+                    styles.deleteBadge,
+                    pressed && { opacity: 0.7 }
+                  ]}
+                >
+                  <Ionicons name="trash-outline" size={14} color={C.error} />
                 </Pressable>
               )}
               <Text style={[
@@ -367,6 +401,17 @@ const styles = StyleSheet.create({
     color: C.warning,
     fontSize: 11,
     fontFamily: 'Inter_400Regular',
+  },
+  deleteBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.2)',
+    marginRight: 6,
   },
   empty: {
     padding: 20,

@@ -372,10 +372,8 @@ export function initDb() {
     // seed a couple items if products table is empty
     const countRow = localDb.getFirstSync(`SELECT COUNT(*) as c FROM products;`);
     if (countRow && (countRow as any).c === 0) {
-      const samples = [
-        { id: '1', name: 'Bread White', price: 1.2, category: 'Bakery' },
-        { id: '2', name: 'Butter 250g', price: 6.0, category: 'Dairy' },
-      ];
+      // Removed sample products to prevent ID collisions with real Supabase data
+      const samples: any[] = [];
       localDb.withTransactionSync(() => {
         samples.forEach(p => {
           localDb.runSync(
@@ -603,6 +601,24 @@ export async function updateSaleSyncProgress(id: string, attempts: number, error
     );
   } catch (err) {
     console.error('[OfflineDB] updateSaleSyncProgress error:', err);
+  }
+}
+
+export async function deleteSaleFromQueue(id: string): Promise<void> {
+  if (Platform.OS === 'web') {
+    const idx = webQueue.findIndex(r => r.id === id);
+    if (idx !== -1) webQueue.splice(idx, 1);
+    return;
+  }
+
+  const localDb = getDb();
+  if (!localDb) return;
+  try {
+    await localDb.runAsync(`DELETE FROM sales_queue WHERE id = ?;`, [id]);
+    console.log(`[OfflineDB] Deleted sale ${id} from queue.`);
+  } catch (err) {
+    console.error('[OfflineDB] deleteSaleFromQueue error:', err);
+    throw err;
   }
 }
 

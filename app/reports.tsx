@@ -210,7 +210,7 @@ export default function ReportsScreen() {
       // By Product & Category
       const items = data.items || [];
       items.forEach((item: any) => {
-        const pId = item.product_id || item.id;
+        const pId = item.product_id || item.id || item.name;
         const pName = item.name || 'Unknown Product';
         const pQty = item.quantity || 0;
         const pRev = (item.price || 0) * pQty;
@@ -414,7 +414,7 @@ export default function ReportsScreen() {
                 </Text>
               </View>
             </View>
-            <Text style={styles.saleItems} numberOfLines={1}>
+            <Text style={styles.saleItems}>
               {d.items.map((i: any) => i.name).join(', ')}
             </Text>
             <View style={styles.saleFooter}>
