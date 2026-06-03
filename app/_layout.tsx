@@ -16,7 +16,7 @@ import {
   Inter_600SemiBold,
   Inter_700Bold,
 } from "@expo-google-fonts/inter";
-import { initDb } from '@/lib/offlineDb';
+import { initDb, checkDbIntegrity } from '@/lib/offlineDb';
 import { initSync } from '@/lib/sync';
 import * as SplashScreen from 'expo-splash-screen';
 
@@ -65,6 +65,17 @@ export default function RootLayout() {
     async function prepare() {
       try {
         initDb();
+        // Run integrity check after DB init — detect corruption early
+        const isHealthy = checkDbIntegrity();
+        if (!isHealthy) {
+          // Import Alert here to avoid issues during module init
+          const { Alert } = require('react-native');
+          Alert.alert(
+            'Database Warning',
+            'The local database may be corrupted. Some sales records could be missing or inaccurate. Please contact your admin.',
+            [{ text: 'OK' }]
+          );
+        }
         initSync();
       } catch (e) {
         console.warn('Initialization error:', e);

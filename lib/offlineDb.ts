@@ -1,4 +1,4 @@
-import { Platform } from 'react-native';
+import { Platform, Alert } from 'react-native';
 
 let db: any = null;
 
@@ -391,9 +391,40 @@ export function initDb() {
 }
 
 
+/**
+ * Generate a robust unique ID for sales.
+ * Uses timestamp + 12 random hex characters for ~281 trillion combinations
+ * at any given millisecond, virtually eliminating collision risk.
+ */
+export function generateSaleId(): string {
+  const timestamp = Date.now().toString(36);
+  const randomPart = Array.from({ length: 12 }, () =>
+    Math.floor(Math.random() * 16).toString(16)
+  ).join('');
+  return `${timestamp}-${randomPart}`;
+}
+
+/**
+ * Validates a sale record before persisting.
+ * Throws with a user-friendly message if invalid.
+ */
+function validateSale(sale: any): void {
+  if (!sale) throw new Error('Sale record is empty');
+  if (!sale.orderId) throw new Error('Sale is missing an order ID');
+  if (typeof sale.total !== 'number' || isNaN(sale.total)) {
+    throw new Error('Sale total is not a valid number');
+  }
+  if (sale.total <= 0) {
+    throw new Error('Sale total must be greater than zero');
+  }
+  if (!Array.isArray(sale.items) || sale.items.length === 0) {
+    throw new Error('Sale has no items');
+  }
+}
+
 export async function queueSale(sale: any): Promise<void> {
   if (Platform.OS === 'web') {
-    const id = sale.orderId || Date.now().toString() + Math.random().toString(36).substr(2, 6);
+    const id = sale.orderId || generateSaleId();
     const rec: SaleRecord = {
       id,
       data: sale,
@@ -404,11 +435,13 @@ export async function queueSale(sale: any): Promise<void> {
     return;
   }
 
+  validateSale(sale);
+
   const localDb = getDb();
   if (!localDb) return;
 
   try {
-    const id = sale.orderId || Date.now().toString() + Math.random().toString(36).substr(2, 6);
+    const id = sale.orderId || generateSaleId();
     const dataStr = JSON.stringify(sale);
     const created = new Date().toISOString();
     await localDb.runAsync(
@@ -422,6 +455,71 @@ export async function queueSale(sale: any): Promise<void> {
   }
 }
 
+/**
+ * Atomically queues a sale AND deducts stock in a single SQLite transaction.
+ * If either operation fails, both are rolled back — preventing inconsistent state.
+ */
+export async function queueSaleAtomically(
+  sale: any,
+  stockItems: { product_id: string; quantity: number }[]
+): Promise<void> {
+  if (Platform.OS === 'web') {
+    await queueSale(sale);
+    return;
+  }
+
+  validateSale(sale);
+
+  const localDb = getDb();
+  if (!localDb) throw new Error('Database not available');
+
+  const id = sale.orderId || generateSaleId();
+  const dataStr = JSON.stringify(sale);
+  const created = new Date().toISOString();
+
+  try {
+    await localDb.withTransactionAsync(async () => {
+      // 1. Insert the sale
+      await localDb.runAsync(
+        `INSERT INTO sales_queue (id, data, synced, created_at) VALUES (?, ?, ?, ?);`,
+        [id, dataStr, 0, created]
+      );
+
+      // 2. Deduct stock for each item
+      for (const item of stockItems) {
+        await localDb.runAsync(
+          `UPDATE products SET in_stock = MAX(0, in_stock - ?) WHERE id = ?;`,
+          [item.quantity, item.product_id]
+        );
+      }
+    });
+    console.log(`[OfflineDB] Sale ${id} queued + stock deducted atomically.`);
+  } catch (err) {
+    console.error(`[OfflineDB] Atomic sale+stock failed for ${id}:`, err);
+    throw err;
+  }
+}
+
+/**
+ * Safely parses a single sale row's JSON data.
+ * Returns null for corrupt rows instead of crashing the entire query.
+ */
+function parseSaleRow(r: any): SaleRecord | null {
+  try {
+    return {
+      id: r.id,
+      data: typeof r.data === 'string' ? JSON.parse(r.data) : r.data,
+      synced: r.synced === 1,
+      sync_attempts: r.sync_attempts || 0,
+      last_error: r.last_error || null,
+      created_at: r.created_at,
+    };
+  } catch (e) {
+    console.error(`[OfflineDB] Corrupt sale row ${r?.id}, skipping:`, e);
+    return null;
+  }
+}
+
 export async function getPendingSales(): Promise<SaleRecord[]> {
   if (Platform.OS === 'web') {
     return webQueue.filter(r => !r.synced);
@@ -432,14 +530,12 @@ export async function getPendingSales(): Promise<SaleRecord[]> {
 
   try {
     const rows = await localDb.getAllAsync(`SELECT * FROM sales_queue WHERE synced = 0;`);
-    return rows.map((r: any) => ({
-      id: r.id,
-      data: typeof r.data === 'string' ? JSON.parse(r.data) : r.data,
-      synced: r.synced === 1,
-      sync_attempts: r.sync_attempts || 0,
-      last_error: r.last_error || null,
-      created_at: r.created_at,
-    }));
+    const results: SaleRecord[] = [];
+    for (const r of rows) {
+      const parsed = parseSaleRow(r);
+      if (parsed) results.push(parsed);
+    }
+    return results;
   } catch (err) {
     console.error('[OfflineDB] getPendingSales error:', err);
     return [];
@@ -456,14 +552,20 @@ export async function getAllSales(): Promise<SaleRecord[]> {
 
   try {
     const rows = await localDb.getAllAsync(`SELECT * FROM sales_queue ORDER BY created_at DESC;`);
-    return rows.map((r: any) => ({
-      id: r.id,
-      data: typeof r.data === 'string' ? JSON.parse(r.data) : r.data,
-      synced: r.synced === 1,
-      sync_attempts: r.sync_attempts || 0,
-      last_error: r.last_error || null,
-      created_at: r.created_at,
-    }));
+    const results: SaleRecord[] = [];
+    let corruptCount = 0;
+    for (const r of rows) {
+      const parsed = parseSaleRow(r);
+      if (parsed) {
+        results.push(parsed);
+      } else {
+        corruptCount++;
+      }
+    }
+    if (corruptCount > 0) {
+      console.warn(`[OfflineDB] ${corruptCount} corrupt sale row(s) were skipped in getAllSales.`);
+    }
+    return results;
   } catch (err) {
     console.error('[OfflineDB] getAllSales error:', err);
     return [];
@@ -510,7 +612,7 @@ export async function queueActivityLog(log: any): Promise<void> {
   if (!localDb) return;
 
   try {
-    const id = Date.now().toString() + Math.random().toString(36).substr(2, 6);
+    const id = generateSaleId();
     const dataStr = JSON.stringify(log);
     const created = new Date().toISOString();
     await localDb.runAsync(
@@ -837,7 +939,7 @@ export async function queueAccessLog(log: Omit<OfflineAccessLog, 'id' | 'synced'
   const localDb = getDb();
   if (!localDb) return 'no-db';
   try {
-    const id = Date.now().toString() + Math.random().toString(36).substr(2, 6);
+    const id = generateSaleId();
     await localDb.runAsync(
       `INSERT INTO access_logs_queue (id, employee_id, shop_id, login_time, synced) VALUES (?, ?, ?, ?, 0);`,
       [id, log.employee_id, log.shop_id, log.login_time]
@@ -931,4 +1033,31 @@ export async function getPendingDeductions(): Promise<Record<string, number>> {
   }
   
   return deductions;
+}
+
+/**
+ * Runs SQLite PRAGMA integrity_check on startup.
+ * Returns true if the database is healthy, false if corruption is detected.
+ * Logs a visible warning on corruption so admins are aware.
+ */
+export function checkDbIntegrity(): boolean {
+  if (Platform.OS === 'web') return true;
+  const localDb = getDb();
+  if (!localDb) return true;
+
+  try {
+    const result = localDb.getFirstSync(`PRAGMA integrity_check;`) as any;
+    const status = result?.integrity_check || result?.['integrity_check'] || 'unknown';
+    if (status === 'ok') {
+      console.log('[OfflineDB] Database integrity check passed.');
+      return true;
+    } else {
+      console.error(`[OfflineDB] ⚠️ DATABASE CORRUPTION DETECTED: ${status}`);
+      // Don't crash — let the app run but warn loudly
+      return false;
+    }
+  } catch (e) {
+    console.error('[OfflineDB] Integrity check failed to run:', e);
+    return false;
+  }
 }

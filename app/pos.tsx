@@ -627,6 +627,13 @@ export default function POSScreen() {
       return;
     }
 
+    // Validate total is positive — prevents negative or zero sales from being recorded
+    if (grandTotal <= 0) {
+      Alert.alert('Invalid Total', 'The sale total must be greater than zero. Check your discount amount.');
+      setIsCharging(false);
+      return;
+    }
+
     const outOfStock = items.filter(i => (i.product.inStock ?? 0) <= 0);
     if (outOfStock.length > 0) {
       const names = outOfStock.map(i => i.product.name).join(', ');
@@ -639,21 +646,26 @@ export default function POSScreen() {
 
     try {
       if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      const orderId = Date.now().toString() + Math.random().toString(36).substr(2, 6);
+
+      // Use robust UUID-style ID to prevent collisions on rapid taps
+      const { generateSaleId } = await import('@/lib/offlineDb');
+      const orderId = generateSaleId();
+
       const receiptItems = items.map(i => ({
         product_id: i.product.id,
         name: i.product.name,
         quantity: i.quantity,
         price: i.product.price,
+        originalPrice: (i.product as any).originalPrice ?? i.product.price,
+        category: i.product.category || 'Uncategorized',
       }));
-
-      const totalDiscountInclAuto = manualDiscountAmount + autoDiscountTotal;
 
       const saleRecord: any = {
         orderId,
         items: receiptItems,
         subtotal: total,
-        discount: totalDiscountInclAuto,
+        discount: manualDiscountAmount,
+        autoSavings: autoDiscountTotal,
         tax: 0,
         total: grandTotal,
         createdAt: new Date().toISOString(),
@@ -664,15 +676,13 @@ export default function POSScreen() {
         employeeName: employee ? `${employee.first_name ?? ''} ${employee.last_name ?? ''}`.trim() : null,
       };
 
-      // Step 1: Queue the sale locally (critical — if this fails, abort)
+      // Step 1: Atomically queue the sale + deduct stock in a single transaction
+      //         If either fails, both are rolled back — no inconsistent state.
       let saleQueued = false;
       try {
-        const { queueSale, deductStockLocally } = await import('@/lib/offlineDb');
-        await queueSale(saleRecord);
+        const { queueSaleAtomically } = await import('@/lib/offlineDb');
+        await queueSaleAtomically(saleRecord, receiptItems);
         saleQueued = true;
-        
-        // Deduct stock locally immediately for responsive UI
-        await deductStockLocally(receiptItems);
         
         // OPTIMISTIC UPDATE: Update the local cache immediately so the UI reflects the change
         queryClient.setQueryData(['supabase-products', shopId], (old: Product[] | undefined) => {
@@ -688,7 +698,7 @@ export default function POSScreen() {
         
         refreshPending();
       } catch (e) {
-        console.warn('failed to queue sale or deduct stock', e);
+        console.warn('failed to queue sale atomically', e);
         if (!saleQueued) {
           // Sale was never saved — alert the cashier and abort
           Alert.alert('Sale Failed', 'Could not save the sale. Please try again.');

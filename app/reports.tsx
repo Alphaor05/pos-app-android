@@ -189,6 +189,7 @@ export default function ReportsScreen() {
     filteredSales.forEach(sale => {
       const data = sale.data;
       const rev = data.total || 0;
+      // Support both old format (combined discount) and new format (manual discount only)
       const disc = data.discount || 0;
       
       totalRevenue += rev;
@@ -230,7 +231,7 @@ export default function ReportsScreen() {
         count: totalSalesCount,
         revenue: totalRevenue,
         discount: totalDiscount,
-        net: totalRevenue,
+        net: Math.round((totalRevenue - totalDiscount) * 100) / 100,
         todayRevenue,
         todayCount: todaySalesCount
       },
