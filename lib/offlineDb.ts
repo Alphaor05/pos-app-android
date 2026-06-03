@@ -1,5 +1,17 @@
 import { Platform, Alert } from 'react-native';
 
+/**
+ * Generates a globally unique ID for sales.
+ * Uses a hex timestamp + 12 random hex characters.
+ * This prevents collisions across multiple terminals/shops.
+ */
+export function generateSaleId(): string {
+  const timestamp = Date.now().toString(16); // ~11 hex chars
+  const randomSuffix = Math.random().toString(16).slice(2, 14); // 12 hex chars
+  return `${timestamp}-${randomSuffix}`;
+}
+
+
 let db: any = null;
 
 function getDb() {
