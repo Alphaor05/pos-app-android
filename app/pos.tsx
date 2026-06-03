@@ -220,22 +220,39 @@ export default function POSScreen() {
   const { items, addItem, removeItem, updateQuantity, clearCart, total } = useCart();
   const { connectedDevice, status: printerStatus, printReceipt } = usePrinter();
   
-  // SYNC NOTIFICATIONS
+  // SYNC NOTIFICATIONS - Buffered to prevent "Alert spam"
   useEffect(() => {
-    const sub = (require('react-native').DeviceEventEmitter as any).addListener('sync_failure', (data: any) => {
-      // Find the "particular product" names involved if possible
-      const itemNames = data.items?.map((i: any) => i.name).join(', ') || 'unknown items';
+    let failureBuffer: any[] = [];
+    let timeout: any = null;
+
+    const showSummary = () => {
+      if (failureBuffer.length === 0) return;
       
+      const count = failureBuffer.length;
+      const uniqueItems = Array.from(new Set(failureBuffer.flatMap(f => f.items || []).map((i: any) => i.name)));
+      const displayItems = uniqueItems.slice(0, 3).join(', ') + (uniqueItems.length > 3 ? '...' : '');
+
       Alert.alert(
         'Product Sync Failure',
-        `A background sync failed for a sale containing: ${itemNames}\n\nError: ${data.error}\n\nPlease check the Sales Queue.`,
+        `${count} sale(s) failed to sync to the dashboard.\n\nProducts involved: ${displayItems}\n\nCommon Error: ${failureBuffer[0].error}\n\nPlease have an Admin check the Sales Queue.`,
         [
           { text: 'View Queue', onPress: () => router.push('/sales') },
           { text: 'Dismiss', style: 'cancel' }
         ]
       );
+      failureBuffer = [];
+    };
+
+    const sub = (require('react-native').DeviceEventEmitter as any).addListener('sync_failure', (data: any) => {
+      failureBuffer.push(data);
+      if (timeout) clearTimeout(timeout);
+      timeout = setTimeout(showSummary, 1500); // Wait 1.5s for more failures before popping
     });
-    return () => sub.remove();
+
+    return () => {
+      sub.remove();
+      if (timeout) clearTimeout(timeout);
+    };
   }, []);
 
   const insets = useSafeAreaInsets();
