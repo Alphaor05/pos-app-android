@@ -219,6 +219,25 @@ export default function POSScreen() {
   const { logout, employee, shopId } = useAuth();
   const { items, addItem, removeItem, updateQuantity, clearCart, total } = useCart();
   const { connectedDevice, status: printerStatus, printReceipt } = usePrinter();
+  
+  // SYNC NOTIFICATIONS
+  useEffect(() => {
+    const sub = (require('react-native').DeviceEventEmitter as any).addListener('sync_failure', (data: any) => {
+      // Find the "particular product" names involved if possible
+      const itemNames = data.items?.map((i: any) => i.name).join(', ') || 'unknown items';
+      
+      Alert.alert(
+        'Product Sync Failure',
+        `A background sync failed for a sale containing: ${itemNames}\n\nError: ${data.error}\n\nPlease check the Sales Queue.`,
+        [
+          { text: 'View Queue', onPress: () => router.push('/sales') },
+          { text: 'Dismiss', style: 'cancel' }
+        ]
+      );
+    });
+    return () => sub.remove();
+  }, []);
+
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
 
@@ -827,16 +846,16 @@ export default function POSScreen() {
         <Pressable style={styles.sidebarOverlay} onPress={() => setSidebarOpen(false)}>
           <View style={styles.sidebarDropdown}>
             <SidebarItem icon="view-grid-outline" label="Products" active styles={styles} s={s} />
+            <View style={{ position: 'relative' }}>
+              <SidebarItem icon="cart-outline" label="Sales Queued" onPress={() => { setSidebarOpen(false); router.push('/sales'); }} styles={styles} s={s} />
+              {pendingCount > 0 && (
+                <View style={[styles.pendingBadge, { right: 16, top: 12 }]}>
+                  <Text style={styles.pendingBadgeText}>{pendingCount}</Text>
+                </View>
+              )}
+            </View>
             {employee?.role === 'Admin' && (
               <>
-                <View style={{ position: 'relative' }}>
-                  <SidebarItem icon="cart-outline" label="Sales Queued" onPress={() => { setSidebarOpen(false); router.push('/sales'); }} styles={styles} s={s} />
-                  {pendingCount > 0 && (
-                    <View style={[styles.pendingBadge, { right: 16, top: 12 }]}>
-                      <Text style={styles.pendingBadgeText}>{pendingCount}</Text>
-                    </View>
-                  )}
-                </View>
                 <SidebarItem 
                   icon="chart-bar" 
                   label="Reports" 

@@ -1,4 +1,5 @@
 import NetInfo from '@react-native-community/netinfo';
+import { DeviceEventEmitter } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { 
   getPendingSales, 
@@ -202,6 +203,16 @@ async function processSaleSync(rec: SaleRecord, posId: string | null, empId: str
 
           await updateSaleSyncProgress(rec.id, nextAttempts, errorMsg);
           
+          // NOTIFY UI: If it's a persistent error (not just network), pop a notification
+          if (!isNetworkError) {
+             DeviceEventEmitter.emit('sync_failure', {
+               saleId: rec.id,
+               error: errorMsg,
+               orderId: rec.data.orderId || rec.id,
+               items: rec.data.items
+             });
+          }
+
           // Only log genuine RPC failures to activity_logs
           if (!isNetworkError) {
             await queueActivityLog({
@@ -215,6 +226,7 @@ async function processSaleSync(rec: SaleRecord, posId: string | null, empId: str
         }
       } else {
         await markSaleSynced(rec.id);
+        DeviceEventEmitter.emit('sync_success', { saleId: rec.id });
         if (currentAttempts > 0) {
             await queueActivityLog({
                 employee_id: rec.data.employeeId || empId || 'system',
