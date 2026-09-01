@@ -1,11 +1,35 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode } from 'react';
 import { Platform } from 'react-native';
+import NetInfo from '@react-native-community/netinfo';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '@/lib/supabase';
 import { getEmployeeByPin, queueAccessLog, updateAccessLogLogout } from '@/lib/offlineDb';
 import { syncEmployees, syncAccessLogsQueue } from '@/lib/sync';
 
 const SESSION_KEY = 'pos_employee_session';
+
+// Bounds the online employee lookup so an offline login (or a network with no
+// route) degrades to the local employee DB instead of hanging on the PIN screen.
+const AUTH_NETWORK_TIMEOUT_MS = 8000;
+
+function withTimeout<T>(promise: PromiseLike<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const id = setTimeout(() => reject(new Error('Auth network timeout')), ms);
+    promise.then(
+      (val) => { clearTimeout(id); resolve(val); },
+      (err) => { clearTimeout(id); reject(err); }
+    );
+  });
+}
+
+async function isOfflineByNetInfo(): Promise<boolean> {
+  try {
+    const state = await NetInfo.fetch();
+    return state.isConnected === false || state.isInternetReachable === false;
+  } catch {
+    return false;
+  }
+}
 
 export interface EmployeeSession {
   employee_id: string;
@@ -47,7 +71,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         } catch { }
       }
       if (storedShopId) {
-        setStateShopId(storedShopId);
+        const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        if (!UUID_REGEX.test(storedShopId)) {
+          console.warn('[Auth] Invalid Shop ID detected in storage, clearing:', storedShopId);
+          AsyncStorage.removeItem('pos_id');
+          setStateShopId(null);
+        } else {
+          setStateShopId(storedShopId);
+        }
       }
       setIsLoading(false);
     });
@@ -78,14 +109,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       let data: any = null;
       let isOffline = false;
 
-      if (supabase) {
+      // Fast offline probe so login never blocks on a network request that can
+      // hang (e.g. Starlink with no route) — fall straight back to local DB.
+      isOffline = await isOfflineByNetInfo();
+
+      if (supabase && !isOffline) {
         try {
-          const { data: onlineData, error: onlineError } = await supabase
-            .from('employees')
-            .select('employee_id, first_name, last_name, role, shop, status')
-            .eq('pin', enteredPin)
-            .eq('status', 'active')
-            .maybeSingle();
+          const { data: onlineData, error: onlineError } = await withTimeout(
+            supabase
+              .from('employees')
+              .select('employee_id, first_name, last_name, role, shop, status')
+              .eq('pin', enteredPin)
+              .eq('status', 'active')
+              .maybeSingle(),
+            AUTH_NETWORK_TIMEOUT_MS
+          );
           
           if (!onlineError) {
             data = onlineData;

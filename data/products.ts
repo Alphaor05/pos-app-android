@@ -6,6 +6,7 @@ export interface Product {
   image_url: string;
   sku?: string;
   inStock?: number;
+  allowNegativeStock?: boolean;
 }
 export interface DiscountPlan {
   id: string;

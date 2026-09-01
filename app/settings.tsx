@@ -8,7 +8,6 @@ import {
   Platform,
   TextInput,
   Alert,
-  Linking,
   RefreshControl,
   ActivityIndicator,
   Switch,
@@ -40,13 +39,11 @@ function EditPrinterView({ onBack }: { onBack: () => void }) {
   const { 
     pairedDevices, 
     usbDevices,
-    savedPrinters,
     isScanning, 
     startScan, 
     stopScan, 
     connect, 
     connectByString,
-    removeSavedPrinter,
     disconnect, 
     connectedDevice,
     testPrint,
@@ -54,8 +51,7 @@ function EditPrinterView({ onBack }: { onBack: () => void }) {
     connectionMode: contextMode,
     setConnectionMode: setContextMode,
     refreshUsbDevices,
-    requestUsbPermission,
-    refreshPairedDevices
+    requestUsbPermission
   } = usePrinter();
 
   const [name, setName] = useState('POS');
@@ -102,7 +98,7 @@ function EditPrinterView({ onBack }: { onBack: () => void }) {
           if (design.extra_space) setExtraSpace(design.extra_space);
           if (design.drawer_cmds) setDrawerCmds(design.drawer_cmds);
         }
-      } catch (e) {}
+      } catch {}
     })();
     
     if (connectedDevice?.printMode === 'Network' || connectedDevice?.printMode === 'Wi-Fi') {
@@ -129,9 +125,12 @@ function EditPrinterView({ onBack }: { onBack: () => void }) {
               ]
             );
           }
-        } catch (e) { }
+        } catch { }
       })();
     }
+    // openSettings/connectedDevice/selectedDevice are unstable identity; the
+    // .address primitives below are the semantically correct triggers.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connectedDevice?.address, selectedDevice?.address]);
 
   const handleSave = async (closeAll = true) => {
@@ -633,7 +632,7 @@ export default function SettingsScreen() {
   const topPad = Platform.OS === 'web' ? 67 : insets.top;
   const botPad = Platform.OS === 'web' ? 34 : insets.bottom;
 
-  const { employee, shopId: contextShopId, updateShopId, logout } = useAuth();
+  const { employee, shopId: contextShopId, updateShopId } = useAuth();
   const [posId, setPosId] = useState<string>('');
   const [posSaved, setPosSaved] = useState(false);
   const [shops, setShops] = useState<{ id: string; name: string }[]>([]);
@@ -663,6 +662,14 @@ export default function SettingsScreen() {
       await updateShopId(null);
       setPosId('');
     } else {
+      const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!UUID_REGEX.test(trimmed)) {
+        Alert.alert(
+          'Invalid Shop ID',
+          'Shop ID must be a valid UUID (e.g. from the Shops table in the admin dashboard).'
+        );
+        return;
+      }
       await updateShopId(trimmed);
       setPosId(trimmed);
     }
@@ -772,7 +779,7 @@ const PulsingIndicator = ({ color }: { color: string }) => {
       ),
       -1
     );
-  }, []);
+  }, [scale, opacity]);
 
   const animatedStyle = useAnimatedStyle(() => ({
     transform: [{ scale: scale.value }],
@@ -791,40 +798,15 @@ function BluetoothSection({ onEdit }: { onEdit: () => void }) {
   const { 
     connectedDevice, 
     disconnect, 
-    connect,
     pairedDevices, 
     status, 
     testPrint, 
-    refreshPairedDevices,
-    enableBluetooth,
-    openSettings,
-    startScan,
-    stopScan,
     isScanning,
     connectionMode
   } = usePrinter();
   
-  const [printerName, setPrinterName] = useState('');
-  const [printerAddress, setPrinterAddress] = useState('');
-  const [saved, setSaved] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testMessage, setTestMessage] = useState('');
-
-  const openSystemSettings = async () => {
-    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    if (Platform.OS === 'android') {
-      const success = await openSettings();
-      if (!success) {
-        Linking.sendIntent('android.settings.BLUETOOTH_SETTINGS').catch(() => {
-          Alert.alert('Bluetooth Settings', 'Please open system settings to manage Bluetooth devices.');
-        });
-      }
-    } else {
-      Linking.openURL('App-Prefs:Bluetooth').catch(() => {
-        Alert.alert('Bluetooth Settings', 'Please open system settings to manage Bluetooth devices.');
-      });
-    }
-  };
 
   const handleTestPrint = async () => {
     if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -843,33 +825,13 @@ function BluetoothSection({ onEdit }: { onEdit: () => void }) {
         if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
         setTimeout(() => setTestMessage(''), 4000);
       }
-    } catch (err) {
+    } catch {
       Alert.alert('Test Print Failed', 'Could not reach the printer. Check the connection and try again.');
       setTestMessage('✗ Unexpected error');
       setTimeout(() => setTestMessage(''), 4000);
     } finally {
       setTesting(false);
     }
-  };
-
-  const handleManualConnect = () => {
-    if (!printerAddress.trim()) return;
-    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    connect({
-      id: printerAddress,
-      name: printerName || 'Custom Printer',
-      address: printerAddress,
-      rssi: -60
-    });
-    setSaved(true);
-    setPrinterAddress('');
-    setPrinterName('');
-    setTimeout(() => setSaved(false), 2500);
-  };
-
-  const handleSelectDevice = (device: any) => {
-    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    connect(device);
   };
 
   const getStatusColor = () => {
@@ -890,15 +852,6 @@ function BluetoothSection({ onEdit }: { onEdit: () => void }) {
       case 'bluetooth_off': return 'Bluetooth Off';
       case 'scanning': return 'Discovery Active';
       default: return 'Disconnected';
-    }
-  };
-
-  const handleScan = () => {
-    if (isScanning) {
-      stopScan();
-    } else {
-      if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      startScan();
     }
   };
 

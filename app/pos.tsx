@@ -1,5 +1,5 @@
 /** vCache_104 **/
-import React, { useState, useMemo, useEffect, useCallback, useDeferredValue, memo } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -15,12 +15,15 @@ import {
   RefreshControl,
   AppState,
   Modal,
+  DeviceEventEmitter,
 } from 'react-native';
+import NetInfo from '@react-native-community/netinfo';
 import { Image } from 'expo-image';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
   withSpring,
+  withTiming,
 } from 'react-native-reanimated';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
@@ -34,6 +37,7 @@ import {
 } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
+import { MessageNotificationsBell } from '@/components/messages/NotificationsBell';
 import { useCart, CartItem } from '@/context/CartContext';
 import { usePrinter } from '@/context/PrinterContext';
 import { Product, DiscountPlan, PricingPlan } from '@/data/products';
@@ -41,51 +45,113 @@ import Colors from '@/constants/colors';
 
 const C = Colors.dark;
 
+const PRODUCT_PAGE_SIZE = 1000;
+
+// Bounding the network phase so a device that is offline (or on a network with
+// no route) can NEVER leave the POS stuck on the loading spinner. NetInfo gives
+// a fast signal; the timeouts cover the "connected but no internet" case where
+// a fetch would otherwise hang for a very long time.
+const NETWORK_TIMEOUT_MS = 10000;
+const CONNECT_TIMEOUT_MS = 6000;
+
+function withTimeout<T>(promise: PromiseLike<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const id = setTimeout(() => reject(new Error('Network timeout')), ms);
+    promise.then(
+      (val) => { clearTimeout(id); resolve(val); },
+      (err) => { clearTimeout(id); reject(err); }
+    );
+  });
+}
+
+async function hasNetwork(): Promise<boolean> {
+  try {
+    const state = await NetInfo.fetch();
+    return state.isConnected !== false && state.isInternetReachable !== false;
+  } catch (e) {
+    console.warn('[products] NetInfo check failed:', e);
+    return true; // unknown → let the request try with its own timeout
+  }
+}
+
+async function loadProductsFromCache(shopId: string | null): Promise<Product[]> {
+  const { getProducts } = await import('@/lib/offlineDb');
+  const local = await getProducts(shopId);
+  if (local.length === 0) {
+    // Never let a failed fetch blank out a fuller in-memory list: if there is
+    // no usable cache, surface an error (React Query keeps the last good data)
+    // instead of replacing it with an empty array.
+    throw new Error('No cached products available offline');
+  }
+  return local.map(p => ({
+    id: p.id,
+    name: p.name,
+    price: p.price,
+    category: p.category || '',
+    image_url: p.image_url || '',
+    inStock: p.in_stock ?? 9999,
+    allowNegativeStock: !!p.allow_negative_stock,
+  }));
+}
+
 async function fetchProductsFromSupabase(shopId: string | null): Promise<Product[]> {
   if (!supabase) {
     console.warn('fetchProducts: supabase client missing – using local cache');
-    try {
-      const { getProducts } = await import('@/lib/offlineDb');
-      const local = await getProducts();
-      return local.map(p => ({
-        id: p.id,
-        name: p.name,
-        price: p.price,
-        category: p.category || '',
-        image_url: p.image_url || '',
-        inStock: p.in_stock ?? 9999,
-      }));
-    } catch (e) {
-      console.warn('offlineDb error:', e);
-      return [];
+    return loadProductsFromCache(shopId);
+  }
+
+  // Fast connectivity probe: if the device reports no internet, skip the
+  // network entirely and serve the last-known-good cache. Without this the
+  // Supabase request can hang indefinitely on a restart while offline, leaving
+  // the POS stuck on "Loading products...".
+  if (!(await hasNetwork())) {
+    console.warn('fetchProducts: offline (NetInfo) – using local cache');
+    return loadProductsFromCache(shopId);
+  }
+
+  // Fetch the ENTIRE catalog (paginated) so the offline cache is never a
+  // truncated subset of what the shop actually sells. Supabase caps rows per
+  // request (default 1000), so a single `.limit()` call silently drops the
+  // rest — those products then vanish whenever the device goes offline.
+  // Ask the server for the expected row count so we can detect an incomplete
+  // download (server row cap) and refuse to overwrite a complete cache with a
+  // truncated one.
+  let expected: number | null = null;
+  try {
+    let countQuery = supabase.from('products').select('*', { count: 'exact', head: true });
+    if (shopId) {
+      countQuery = countQuery.eq('product_shop_stock.shop_id', shopId);
     }
-  }
-
-  let query = supabase.from('products').select('*, product_shop_stock(price, in_stock, available)').limit(5000);
-  if (shopId) {
-    query = query.eq('product_shop_stock.shop_id', shopId);
-  }
-
-  const { data, error } = await query.order('name', { ascending: true });
-  if (error) {
-    try {
-      const { getProducts } = await import('@/lib/offlineDb');
-      const local = await getProducts();
-      return local.map(p => ({
-        id: p.id,
-        name: p.name,
-        price: p.price,
-        category: p.category || '',
-        image_url: p.image_url || '',
-        inStock: p.in_stock ?? 9999,
-      }));
-    } catch (err) {
-      console.warn('offlineDb error:', err);
-      throw new Error(error.message);
+    const countRes = await withTimeout(countQuery, CONNECT_TIMEOUT_MS);
+    if (!countRes.error && typeof countRes.count === 'number') {
+      expected = countRes.count;
     }
+  } catch (e) {
+    // Count request timed out → almost certainly offline. Serve the cache now
+    // instead of burning another timeout on the full download below.
+    console.warn('[products] count query timed out – using local cache:', e);
+    return loadProductsFromCache(shopId);
   }
 
-  const merged = (data ?? []).map((p: any) => {
+  let allRows: any[] = [];
+  try {
+    let query = supabase.from('products').select('*, product_shop_stock(price, in_stock, available)').order('name', { ascending: true });
+    if (shopId) {
+      query = query.eq('product_shop_stock.shop_id', shopId);
+    }
+    for (let from = 0; expected === null || allRows.length < expected; from += PRODUCT_PAGE_SIZE) {
+      const { data, error } = await withTimeout(query.range(from, from + PRODUCT_PAGE_SIZE - 1), NETWORK_TIMEOUT_MS);
+      if (error) throw error;
+      const page = data ?? [];
+      allRows.push(...page);
+      if (page.length < PRODUCT_PAGE_SIZE) break;
+    }
+  } catch (err) {
+    console.warn('fetchProducts error – using local cache:', err);
+    return loadProductsFromCache(shopId);
+  }
+
+  const merged = (allRows ?? []).map((p: any) => {
     const shopData = p.product_shop_stock && p.product_shop_stock.length > 0 ? p.product_shop_stock[0] : null;
     return {
       id: p.id,
@@ -95,26 +161,39 @@ async function fetchProductsFromSupabase(shopId: string | null): Promise<Product
       image_url: p.image_url,
       sku: p.code || p.sku,
       inStock: shopData ? Number(shopData.in_stock ?? 0) : 0,
+      allowNegativeStock: !!p.allow_negative_stock,
     };
   });
 
-  // NEW: Account for pending local deductions to keep UI consistent until sync
+  const fetchComplete = expected === null || allRows.length >= expected;
+  if (!fetchComplete) {
+    // Do NOT replace the cached catalog with a partial download: serve the
+    // last complete cache, or the partial fresh data if no cache exists.
+    console.warn(`[products] download incomplete (${allRows.length}/${expected}) – keeping existing cache`);
+    try {
+      return await loadProductsFromCache(shopId);
+    } catch {
+      return merged as Product[];
+    }
+  }
+
+  // Account for pending local deductions to keep UI consistent until sync
   let finalProducts = merged as Product[];
   try {
-    const { getPendingDeductions, clearProducts, bulkAddProducts } = await import('@/lib/offlineDb');
+    const { getPendingDeductions, bulkAddProducts } = await import('@/lib/offlineDb');
     const pendingDeductions = await getPendingDeductions();
-    
+
     finalProducts = merged.map(p => {
       const pendingQty = pendingDeductions[p.id] || 0;
+      const newStock = (p.inStock || 0) - pendingQty;
       return {
         ...p,
-        inStock: Math.max(0, (p.inStock || 0) - pendingQty)
+        inStock: p.allowNegativeStock ? newStock : Math.max(0, newStock)
       };
     });
 
-    // Sync to local DB
-    await clearProducts();
-    await bulkAddProducts(finalProducts.map(p => ({ ...p as any, in_stock: p.inStock })));
+    // Replace only this shop's cache bucket with the complete catalog.
+    await bulkAddProducts(finalProducts.map(p => ({ ...p as any, in_stock: p.inStock })), shopId);
   } catch (e) {
     console.warn('Sync products error:', e);
   }
@@ -133,6 +212,12 @@ async function fetchDiscountPlansFromSupabase(shopId: string | null): Promise<Di
     }
   }
 
+  if (!(await hasNetwork())) {
+    console.warn('fetchDiscountPlans: offline (NetInfo) – using local cache');
+    const { getDiscountPlans } = await import('@/lib/offlineDb');
+    return await getDiscountPlans(shopId);
+  }
+
   let query = supabase
     .from('discount_plans')
     .select('*')
@@ -142,14 +227,19 @@ async function fetchDiscountPlansFromSupabase(shopId: string | null): Promise<Di
     query = query.or(`shop_id.eq.${shopId},shop_id.is.null`);
   }
 
-  const { data, error } = await query;
-  if (error) {
+  let data: any = null;
+  try {
+    const res = await withTimeout(query, NETWORK_TIMEOUT_MS);
+    if (res.error) throw res.error;
+    data = res.data;
+  } catch (err) {
+    console.warn('fetchDiscountPlans error – using local cache:', err);
     try {
       const { getDiscountPlans } = await import('@/lib/offlineDb');
       return await getDiscountPlans(shopId);
-    } catch (err) {
-      console.warn('offlineDb discount error:', err);
-      throw new Error(error.message);
+    } catch (cacheErr) {
+      console.warn('offlineDb discount error:', cacheErr);
+      return [];
     }
   }
 
@@ -178,6 +268,12 @@ async function fetchPricingPlansFromSupabase(shopId: string | null): Promise<Pri
     }
   }
 
+  if (!(await hasNetwork())) {
+    console.warn('fetchPricingPlans: offline (NetInfo) – using local cache');
+    const { getPricingPlans } = await import('@/lib/offlineDb');
+    return await getPricingPlans(shopId);
+  }
+
   let query = supabase
     .from('pricing_plans')
     .select('*')
@@ -187,14 +283,19 @@ async function fetchPricingPlansFromSupabase(shopId: string | null): Promise<Pri
     query = query.or(`shop_id.eq.${shopId},shop_id.is.null`);
   }
 
-  const { data, error } = await query;
-  if (error) {
+  let data: any = null;
+  try {
+    const res = await withTimeout(query, NETWORK_TIMEOUT_MS);
+    if (res.error) throw res.error;
+    data = res.data;
+  } catch (err) {
+    console.warn('fetchPricingPlans error – using local cache:', err);
     try {
       const { getPricingPlans } = await import('@/lib/offlineDb');
       return await getPricingPlans(shopId);
-    } catch (err) {
-      console.warn('offlineDb pricing error:', err);
-      throw new Error(error.message);
+    } catch (cacheErr) {
+      console.warn('offlineDb pricing error:', cacheErr);
+      return [];
     }
   }
 
@@ -229,28 +330,48 @@ export default function POSScreen() {
       if (failureBuffer.length === 0) return;
       
       const count = failureBuffer.length;
+      const blockedCount = failureBuffer.filter(f => f.blocked).length;
       const uniqueItems = Array.from(new Set(failureBuffer.flatMap(f => f.items || []).map((i: any) => i.name)));
       const displayItems = uniqueItems.slice(0, 3).join(', ') + (uniqueItems.length > 3 ? '...' : '');
 
-      Alert.alert(
-        'Product Sync Failure',
-        `${count} sale(s) failed to sync to the dashboard.\n\nProducts involved: ${displayItems}\n\nCommon Error: ${failureBuffer[0].error}\n\nPlease have an Admin check the Sales Queue.`,
-        [
-          { text: 'View Queue', onPress: () => router.push('/sales') },
-          { text: 'Dismiss', style: 'cancel' }
-        ]
-      );
+      if (blockedCount > 0) {
+        Alert.alert(
+          'Sales Blocked',
+          `${count} sale(s) are blocked and will not sync until retried.\n\nProducts involved: ${displayItems}\n\nCommon Error: ${failureBuffer[0].error}\n\nTap "Retry Blocked" in the Sales Queue.`,
+          [
+            { text: 'View Queue', onPress: () => router.push('/sales') },
+            { text: 'Dismiss', style: 'cancel' }
+          ]
+        );
+      } else {
+        Alert.alert(
+          'Product Sync Failure',
+          `${count} sale(s) failed to sync to the dashboard.\n\nProducts involved: ${displayItems}\n\nCommon Error: ${failureBuffer[0].error}\n\nPlease have an Admin check the Sales Queue.`,
+          [
+            { text: 'View Queue', onPress: () => router.push('/sales') },
+            { text: 'Dismiss', style: 'cancel' }
+          ]
+        );
+      }
       failureBuffer = [];
     };
 
-    const sub = (require('react-native').DeviceEventEmitter as any).addListener('sync_failure', (data: any) => {
+    const pushFailure = (data: any) => {
       failureBuffer.push(data);
       if (timeout) clearTimeout(timeout);
       timeout = setTimeout(showSummary, 1500); // Wait 1.5s for more failures before popping
+    };
+
+    const sub = DeviceEventEmitter.addListener('sync_failure', (data: any) => {
+      pushFailure(data);
+    });
+    const blockedSub = DeviceEventEmitter.addListener('sale_blocked', (data: any) => {
+      pushFailure({ ...data, blocked: true });
     });
 
     return () => {
       sub.remove();
+      blockedSub.remove();
       if (timeout) clearTimeout(timeout);
     };
   }, []);
@@ -265,8 +386,7 @@ export default function POSScreen() {
   const s = useCallback((val: number) => Math.floor(Math.max(val * scale, val * 0.75)), [scale]);
 
   // 2. ALL STATES
-  const [search, setSearch] = useState('');
-  const deferredSearch = useDeferredValue(search);
+  const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [orderSuccess, setOrderSuccess] = useState(false);
   const [isCharging, setIsCharging] = useState(false);
@@ -275,9 +395,55 @@ export default function POSScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<string>('USD Cash');
   const [showPaymentPicker, setShowPaymentPicker] = useState(false);
+  const [showVoidConfirm, setShowVoidConfirm] = useState(false);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const voidModalOpacity = useSharedValue(0);
+  const voidModalScale = useSharedValue(0.85);
+  const voidModalStyle = useAnimatedStyle(() => ({
+    opacity: voidModalOpacity.value,
+    transform: [{ scale: voidModalScale.value }],
+  }));
+  const voidBtnScale = useSharedValue(1);
+  const voidBtnStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: voidBtnScale.value }],
+  }));
+  const voidConfirmScale = useSharedValue(1);
+  const voidConfirmStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: voidConfirmScale.value }],
+  }));
+  const clearModalOpacity = useSharedValue(0);
+  const clearModalScale = useSharedValue(0.85);
+  const clearModalStyle = useAnimatedStyle(() => ({
+    opacity: clearModalOpacity.value,
+    transform: [{ scale: clearModalScale.value }],
+  }));
+  const clearConfirmScale = useSharedValue(1);
+  const clearConfirmStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: clearConfirmScale.value }],
+  }));
   const [customerName, setCustomerName] = useState('');
   const [pendingCount, setPendingCount] = useState(0);
   const [currentTime, setCurrentTime] = useState(new Date());
+
+  useEffect(() => {
+    if (showVoidConfirm) {
+      voidModalOpacity.value = withTiming(1, { duration: 200 });
+      voidModalScale.value = withSpring(1, { damping: 14, stiffness: 200 });
+    } else {
+      voidModalOpacity.value = withTiming(0, { duration: 150 });
+      voidModalScale.value = withSpring(0.85, { damping: 14, stiffness: 200 });
+    }
+  }, [showVoidConfirm, voidModalOpacity, voidModalScale]);
+
+  useEffect(() => {
+    if (showClearConfirm) {
+      clearModalOpacity.value = withTiming(1, { duration: 200 });
+      clearModalScale.value = withSpring(1, { damping: 14, stiffness: 200 });
+    } else {
+      clearModalOpacity.value = withTiming(0, { duration: 150 });
+      clearModalScale.value = withSpring(0.85, { damping: 14, stiffness: 200 });
+    }
+  }, [showClearConfirm, clearModalOpacity, clearModalScale]);
 
   // 3. ALL DATA QUERIES
   const {
@@ -310,7 +476,8 @@ export default function POSScreen() {
     queryKey: ['pricing-plans', shopId],
     queryFn: () => fetchPricingPlansFromSupabase(shopId),
   });
-  const { data: receiptDesign, error: designError } = useQuery({
+  // Fetches the receipt design for offline receipt printing (side effect: cache).
+  useQuery({
     queryKey: ['receipt-design', shopId],
     queryFn: async () => {
       try {
@@ -345,40 +512,56 @@ export default function POSScreen() {
   // 4. ALL MEMOS AND CALLBACKS
   const styles = useMemo(() => createStyles(s, width, height, isMobile), [s, width, height, isMobile]);
 
-  const parsedSettings = useMemo(() => {
-    if (!receiptDesign) return undefined;
-    return {
-      header: receiptDesign.header,
-      footer: receiptDesign.footer,
-      receiptSize: receiptDesign.receipt_size,
-    };
-  }, [receiptDesign]);
-
-  // Helper to check if a plan is valid based on dates (Local timezone safe)
-  const isDateValid = useCallback((start: string, end: string) => {
+  // Pure check: is a plan valid for the given date (Local timezone safe).
+  // Date-scoped so it only changes at a day boundary, NOT every 30s — this lets
+  // the heavy product/plan recompute below stay stable across clock ticks and
+  // avoids freezing the UI (especially search) on slower tablets.
+  const isValidForDate = useCallback((now: Date, start: string, end: string) => {
     // Force local date parsing by using slashes instead of dashes if it's YYYY-MM-DD
     const startStr = start.length === 10 ? start.replace(/-/g, '/') : start;
     const endStr = end.length === 10 ? end.replace(/-/g, '/') : end;
-    
+
     const startDate = new Date(startStr);
     const endDate = new Date(endStr);
-    
+
     if (start.length === 10) startDate.setHours(0, 0, 0, 0);
     if (end.length === 10) endDate.setHours(23, 59, 59, 999);
-    
-    return currentTime >= startDate && currentTime <= endDate;
-  }, [currentTime]);
+
+    return now >= startDate && now <= endDate;
+  }, []);
+
+  // Collapse time to a day key so plan-date validity only re-evaluates when the
+  // calendar date changes (midnight), not every 30-second clock tick.
+  const dayKey = `${currentTime.getFullYear()}-${currentTime.getMonth()}-${currentTime.getDate()}`;
+
+  // Cheap O(plans) prefilter of which plans are currently date-valid. Stable
+  // across the day, so adjustedProducts (O(products x plans)) won't recompute
+  // just because the clock moved.
+  const validPricingPlans = useMemo(() => {
+    const now = new Date();
+    return activePricingPlans.filter(p => p.status === 'active' && isValidForDate(now, p.start_date, p.end_date));
+    // dayKey in deps is an intentional time-boundary for correctness; eslint-safe name kept.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePricingPlans, isValidForDate, dayKey]);
+
+  const validDiscountPlans = useMemo(() => {
+    const now = new Date();
+    return activeDiscountPlans.filter(p => p.status === 'active' && isValidForDate(now, p.start_date, p.end_date));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeDiscountPlans, isValidForDate, dayKey]);
 
   const adjustedProducts = useMemo(() => {
-    // Pre-group plans to avoid filtering them for every single product
+    // Pre-group plans to avoid filtering them for every single product.
+    // Plans are already prefiltered by date (validPricingPlans etc.), so we
+    // don't re-check dates here — this keeps the expensive product map loop
+    // stable across clock ticks.
     const pricingPlansByType = {
       all: [] as PricingPlan[],
       product: {} as Record<string, PricingPlan[]>,
       category: {} as Record<string, PricingPlan[]>,
     };
 
-    activePricingPlans.forEach(plan => {
-      if (plan.status !== 'active' || !isDateValid(plan.start_date, plan.end_date)) return;
+    validPricingPlans.forEach(plan => {
       if (plan.applicable_to === 'all') {
         pricingPlansByType.all.push(plan);
       } else if (plan.applicable_to === 'product') {
@@ -398,8 +581,7 @@ export default function POSScreen() {
       category: {} as Record<string, DiscountPlan[]>,
     };
 
-    activeDiscountPlans.forEach(plan => {
-      if (plan.status !== 'active' || !isDateValid(plan.start_date, plan.end_date)) return;
+    validDiscountPlans.forEach(plan => {
       if (plan.applicable_to === 'all') {
         discountPlansByType.all.push(plan);
       } else if (plan.applicable_to === 'product') {
@@ -467,7 +649,7 @@ export default function POSScreen() {
         priceFromDiscount = lowestPrice;
       }
 
-      const finalPrice = Math.min(priceFromPricing, priceFromDiscount);
+      const finalPrice = Math.round(Math.min(priceFromPricing, priceFromDiscount) * 100) / 100;
 
       return {
         ...p,
@@ -476,7 +658,7 @@ export default function POSScreen() {
         isAdjusted: finalPrice !== p.price
       };
     });
-  }, [products, activePricingPlans, activeDiscountPlans, isDateValid]);
+  }, [products, validPricingPlans, validDiscountPlans]);
 
   const categories = useMemo(() => {
     const cats = new Set<string>();
@@ -489,20 +671,26 @@ export default function POSScreen() {
     return ['All', ...Array.from(cats).sort()];
   }, [adjustedProducts]);
 
+  // Debounced from SearchBar; parent only re-renders when the term settles.
+  const handleSearch = useCallback((text: string) => {
+    setSearchTerm(text.trim().toLowerCase());
+  }, []);
+
   const filteredProducts = useMemo(() => {
     return adjustedProducts.filter(p => {
       const pCat = p.category ? p.category.trim().toUpperCase() : '';
       const matchCat = selectedCategory === 'All' || pCat === selectedCategory;
       const matchSearch =
-        p.name.toLowerCase().includes(deferredSearch.toLowerCase()) ||
-        (p.sku ?? '').toLowerCase().includes(deferredSearch.toLowerCase());
+        searchTerm.length === 0 ||
+        p.name.toLowerCase().includes(searchTerm) ||
+        (p.sku ?? '').toLowerCase().includes(searchTerm);
       return matchCat && matchSearch;
     });
-  }, [adjustedProducts, deferredSearch, selectedCategory]);
+  }, [adjustedProducts, searchTerm, selectedCategory]);
 
   const autoDiscountTotal = useMemo(() => {
     let totalDisc = 0;
-    if (activeDiscountPlans.length === 0 || items.length === 0) return 0;
+    if (validDiscountPlans.length === 0 || items.length === 0) return 0;
 
     items.forEach(item => {
       // Use the potentially adjusted product price from adjustedProducts
@@ -510,9 +698,8 @@ export default function POSScreen() {
       const currentPrice = productInList?.price || item.product.price;
 
       // Find plans applicable to this specific product OR its category OR 'all'
-      const applicablePlans = activeDiscountPlans.filter(plan => {
-        if (plan.status !== 'active') return false;
-        if (!isDateValid(plan.start_date, plan.end_date)) return false;
+      // (validDiscountPlans is already filtered by status + date).
+      const applicablePlans = validDiscountPlans.filter(plan => {
         if (plan.applicable_to === 'all') return true;
 
         const targetName = normalize(plan.target_name || '');
@@ -546,7 +733,7 @@ export default function POSScreen() {
     });
 
     return totalDisc;
-  }, [items, activeDiscountPlans, adjustedProducts]);
+  }, [items, validDiscountPlans, adjustedProducts]);
 
   const manualDiscountAmount = parseFloat(discount) || 0;
   // NOTE: Cart total already uses the potentially discounted product price.
@@ -613,10 +800,34 @@ export default function POSScreen() {
 
   useEffect(() => {
     if (!supabase) return;
+
+    // Debounce realtime-driven refetches so bursts of stock changes (e.g. a
+    // sale on a second tablet using the same shop) coalesce into a single
+    // refetch instead of triggering a full-catalog redownload every event.
+    const debouncedInvalidate = (() => {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      let queued: { key: readonly unknown[]; }[] = [];
+      const flush = () => {
+        const keys = queued;
+        timer = null;
+        queued = [];
+        for (const q of keys) {
+          queryClient.invalidateQueries({ queryKey: q.key as any });
+        }
+      };
+      return (key: readonly unknown[]) => {
+        if (!queued.some(q => JSON.stringify(q.key) === JSON.stringify(key))) {
+          queued.push({ key });
+        }
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(flush, 800);
+      };
+    })();
+
     const prodChannel = supabase
       .channel('inventory_sync')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, async () => {
-        queryClient.invalidateQueries({ queryKey: ['supabase-products', shopId] });
+        debouncedInvalidate(['supabase-products', shopId]);
       })
       .on('postgres_changes', {
         event: '*',
@@ -624,28 +835,28 @@ export default function POSScreen() {
         table: 'product_shop_stock',
         filter: shopId ? `shop_id=eq.${shopId}` : undefined
       }, async () => {
-        queryClient.invalidateQueries({ queryKey: ['supabase-products', shopId] });
+        debouncedInvalidate(['supabase-products', shopId]);
       })
       .on('postgres_changes', {
         event: '*',
         schema: 'public',
         table: 'discount_plans'
       }, async () => {
-        queryClient.invalidateQueries({ queryKey: ['discount-plans', shopId] });
+        debouncedInvalidate(['discount-plans', shopId]);
       })
       .on('postgres_changes', {
         event: '*',
         schema: 'public',
         table: 'pricing_plans'
       }, async () => {
-        queryClient.invalidateQueries({ queryKey: ['pricing-plans', shopId] });
+        debouncedInvalidate(['pricing-plans', shopId]);
       })
       .on('postgres_changes', {
         event: '*',
         schema: 'public',
         table: 'receipt_designs'
       }, async () => {
-        queryClient.invalidateQueries({ queryKey: ['receipt-design', shopId] });
+        debouncedInvalidate(['receipt-design', shopId]);
       })
       .subscribe();
 
@@ -670,7 +881,7 @@ export default function POSScreen() {
       return;
     }
 
-    const outOfStock = items.filter(i => (i.product.inStock ?? 0) <= 0);
+    const outOfStock = items.filter(i => (i.product.inStock ?? 0) <= 0 && !i.product.allowNegativeStock);
     if (outOfStock.length > 0) {
       const names = outOfStock.map(i => i.product.name).join(', ');
       Alert.alert('Out of Stock', `Cannot complete sale — the following item(s) have no stock: ${names}`);
@@ -719,14 +930,20 @@ export default function POSScreen() {
         const { queueSaleAtomically } = await import('@/lib/offlineDb');
         await queueSaleAtomically(saleRecord, receiptItems);
         saleQueued = true;
-        
+
+        // COMMIT POINT: the sale is durably recorded in the local ledger.
+        // Clear the cart immediately so a crash/restart in the next moments
+        // cannot cause the same items to be re-rung as a duplicate sale.
+        clearCart();
+
         // OPTIMISTIC UPDATE: Update the local cache immediately so the UI reflects the change
         queryClient.setQueryData(['supabase-products', shopId], (old: Product[] | undefined) => {
           if (!old) return old;
           return old.map(p => {
             const soldItem = receiptItems.find(i => i.product_id === p.id);
             if (soldItem) {
-              return { ...p, inStock: Math.max(0, (p.inStock || 0) - soldItem.quantity) };
+              const newStock = (p.inStock || 0) - soldItem.quantity;
+              return { ...p, inStock: p.allowNegativeStock ? newStock : Math.max(0, newStock) };
             }
             return p;
           });
@@ -790,11 +1007,11 @@ export default function POSScreen() {
         console.warn('[POS] Silent print failed:', e);
       }
 
-      // Step 5: Show success and reset cart
+      // Step 5: Show success and clear transient fields.
+      //         NOTE: cart was already cleared at the commit point above.
       setOrderSuccess(true);
       didScheduleReset = true;
       setTimeout(() => {
-        clearCart();
         setCustomerName('');
         setOrderSuccess(false);
         setIsCharging(false);
@@ -825,23 +1042,10 @@ export default function POSScreen() {
             )}
           </Pressable>
 
-          <View style={styles.searchBox}>
-            <Feather name="search" size={s(16)} color={C.textSecondary} />
-            <TextInput
-              style={styles.searchInput}
-              placeholder="Search products..."
-              placeholderTextColor={C.textMuted}
-              value={search}
-              onChangeText={setSearch}
-            />
-            {search.length > 0 && (
-              <Pressable onPress={() => setSearch('')}>
-                <Feather name="x" size={s(14)} color={C.textSecondary} />
-              </Pressable>
-            )}
-          </View>
+          <SearchBar onSearch={handleSearch} styles={styles} s={s} />
         </View>
         <View style={styles.topBarRight}>
+          <MessageNotificationsBell shopId={shopId} iconSize={s(20)} />
           {pendingCount > 0 && (
             <Pressable 
               style={[styles.topBarIconBtn, { backgroundColor: C.warningDim }]} 
@@ -883,6 +1087,13 @@ export default function POSScreen() {
                 <SidebarItem icon="account-multiple-outline" label="Customers" styles={styles} s={s} />
               </>
             )}
+            <SidebarItem
+              icon="message-alert-outline"
+              label="Messages"
+              onPress={() => { setSidebarOpen(false); router.push('/messages'); }}
+              styles={styles}
+              s={s}
+            />
             <SidebarItem
               icon="cog-outline"
               label="Settings"
@@ -1002,22 +1213,23 @@ export default function POSScreen() {
 
             {items.length > 0 && (
               <View style={styles.actionBtns}>
-                <Pressable style={styles.clearRow} onPress={async () => {
-                  const { logActivity } = await import('@/lib/activityLogger');
-                  await logActivity('transaction_cancelled', employee?.employee_id || null);
-                  clearCart();
+                <Pressable style={styles.clearRow} onPress={() => {
+                  setShowClearConfirm(true);
+                  if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                 }}>
                   <Feather name="trash-2" size={s(13)} color={C.danger} />
                   <Text style={styles.clearRowText}>Clear</Text>
                 </Pressable>
-                <Pressable style={styles.voidBtn} onPress={async () => {
-                  const { logActivity } = await import('@/lib/activityLogger');
-                  await logActivity('transaction_void', employee?.employee_id || null, { amount: grandTotal });
-                  clearCart();
-                  if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-                }}>
-                  <Text style={styles.voidBtnText}>VOID</Text>
-                </Pressable>
+                <Animated.View style={voidBtnStyle}>
+                  <Pressable
+                    style={styles.voidBtn}
+                    onPress={() => setShowVoidConfirm(true)}
+                    onPressIn={() => { voidBtnScale.value = withSpring(0.92, { damping: 16, stiffness: 260 }); }}
+                    onPressOut={() => { voidBtnScale.value = withSpring(1, { damping: 12, stiffness: 200 }); }}
+                  >
+                    <Text style={styles.voidBtnText}>VOID</Text>
+                  </Pressable>
+                </Animated.View>
               </View>
             )}
 
@@ -1139,6 +1351,93 @@ export default function POSScreen() {
                 </Pressable>
               </Modal>
 
+              <Modal
+                visible={showVoidConfirm}
+                transparent={true}
+                animationType="fade"
+                onRequestClose={() => setShowVoidConfirm(false)}
+              >
+                <Pressable
+                  style={styles.modalOverlay}
+                  onPress={() => setShowVoidConfirm(false)}
+                >
+                  <Animated.View style={[styles.voidModal, voidModalStyle]}>
+                    <MaterialCommunityIcons name="alert-circle-outline" size={s(40)} color={C.danger} />
+                    <Text style={styles.voidModalTitle}>Void Transaction?</Text>
+                    <Text style={styles.voidModalBody}>
+                      This will void the current transaction and remove all {itemCount} item(s) from the cart (total {grandTotal.toFixed(2)}). This cannot be undone.
+                    </Text>
+                    <View style={styles.voidModalBtns}>
+                      <Pressable
+                        style={[styles.voidModalBtn, styles.voidModalCancelBtn]}
+                        onPress={() => setShowVoidConfirm(false)}
+                      >
+                        <Text style={styles.voidModalCancelText}>Cancel</Text>
+                      </Pressable>
+                      <Animated.View style={[styles.voidModalBtn, voidConfirmStyle]}>
+                        <Pressable
+                          style={[styles.voidModalFillBtn, styles.voidModalConfirmBtn]}
+                          onPress={async () => {
+                            setShowVoidConfirm(false);
+                            const { logActivity } = await import('@/lib/activityLogger');
+                            await logActivity('transaction_void', employee?.employee_id || null, { amount: grandTotal });
+                            clearCart();
+                            if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+                          }}
+                          onPressIn={() => { voidConfirmScale.value = withSpring(0.94, { damping: 16, stiffness: 260 }); }}
+                          onPressOut={() => { voidConfirmScale.value = withSpring(1, { damping: 12, stiffness: 200 }); }}
+                        >
+                          <Text style={styles.voidModalConfirmText}>Void</Text>
+                        </Pressable>
+                      </Animated.View>
+                    </View>
+                  </Animated.View>
+                </Pressable>
+              </Modal>
+
+              <Modal
+                visible={showClearConfirm}
+                transparent={true}
+                animationType="fade"
+                onRequestClose={() => setShowClearConfirm(false)}
+              >
+                <Pressable
+                  style={styles.modalOverlay}
+                  onPress={() => setShowClearConfirm(false)}
+                >
+                  <Animated.View style={[styles.voidModal, clearModalStyle]}>
+                    <MaterialCommunityIcons name="trash-can-outline" size={s(40)} color={C.danger} />
+                    <Text style={styles.voidModalTitle}>Clear Cart?</Text>
+                    <Text style={styles.voidModalBody}>
+                      This will remove all {itemCount} item(s) from the cart (total {grandTotal.toFixed(2)}). This cannot be undone.
+                    </Text>
+                    <View style={styles.voidModalBtns}>
+                      <Pressable
+                        style={[styles.voidModalBtn, styles.voidModalCancelBtn]}
+                        onPress={() => setShowClearConfirm(false)}
+                      >
+                        <Text style={styles.voidModalCancelText}>Keep Items</Text>
+                      </Pressable>
+                      <Animated.View style={[styles.voidModalBtn, clearConfirmStyle]}>
+                        <Pressable
+                          style={[styles.voidModalFillBtn, styles.voidModalConfirmBtn]}
+                          onPress={async () => {
+                            setShowClearConfirm(false);
+                            const { logActivity } = await import('@/lib/activityLogger');
+                            await logActivity('transaction_cancelled', employee?.employee_id || null);
+                            clearCart();
+                          }}
+                          onPressIn={() => { clearConfirmScale.value = withSpring(0.94, { damping: 16, stiffness: 260 }); }}
+                          onPressOut={() => { clearConfirmScale.value = withSpring(1, { damping: 12, stiffness: 200 }); }}
+                        >
+                          <Text style={styles.voidModalConfirmText}>Clear</Text>
+                        </Pressable>
+                      </Animated.View>
+                    </View>
+                  </Animated.View>
+                </Pressable>
+              </Modal>
+
               <Pressable
                 style={[
                   styles.chargeBtn,
@@ -1160,6 +1459,57 @@ export default function POSScreen() {
     </View>
   );
 }
+
+/**
+ * Self-contained search input. Keeps its text in LOCAL state so each keystroke
+ * only re-renders this tiny component, never the whole POS screen. The parent
+ * receives a debounced, already-lowercased term via onSearch.
+ */
+const SearchBar = React.memo(({ onSearch, styles, s }: {
+  onSearch: (text: string) => void;
+  styles: any;
+  s: any;
+}) => {
+  const [text, setText] = useState('');
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, []);
+
+  const handleChange = (value: string) => {
+    setText(value);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => onSearch(value), 250);
+  };
+
+  const handleClear = () => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    setText('');
+    onSearch('');
+  };
+
+  return (
+    <View style={styles.searchBox}>
+      <Feather name="search" size={s(16)} color={C.textSecondary} />
+      <TextInput
+        style={styles.searchInput}
+        placeholder="Search products..."
+        placeholderTextColor={C.textMuted}
+        value={text}
+        onChangeText={handleChange}
+      />
+      {text.length > 0 && (
+        <Pressable onPress={handleClear}>
+          <Feather name="x" size={s(14)} color={C.textSecondary} />
+        </Pressable>
+      )}
+    </View>
+  );
+});
+SearchBar.displayName = 'SearchBar';
 
 function SidebarItem({
   icon,
@@ -1210,7 +1560,8 @@ function CategoryTab({ label, selected, onPress, styles }: { label: string; sele
 }
 
 const ProductCard = React.memo(({ product, onPress, styles, s }: { product: Product; onPress: (p: Product) => void; styles: any; s: any }) => {
-  const isOutOfStock = (product.inStock ?? 0) <= 0;
+  const isOutOfStock = !product.allowNegativeStock && (product.inStock ?? 0) <= 0;
+  const isNegative = product.allowNegativeStock && (product.inStock ?? 0) < 0;
   const scale = useSharedValue(1);
   const animStyle = useAnimatedStyle(() => ({
     transform: [{ scale: scale.value }],
@@ -1240,6 +1591,10 @@ const ProductCard = React.memo(({ product, onPress, styles, s }: { product: Prod
         {isOutOfStock ? (
           <View style={styles.outOfStockOverlay}>
             <Text style={styles.outOfStockText}>OUT</Text>
+          </View>
+        ) : isNegative ? (
+          <View style={[styles.lowStockOverlay, { backgroundColor: 'rgba(220,50,50,0.85)' }]}>
+            <Text style={styles.lowStockText}>{product.inStock}</Text>
           </View>
         ) : (product.inStock ?? 0) < 10 && (
           <View style={styles.lowStockOverlay}>
@@ -1276,6 +1631,7 @@ const ProductCard = React.memo(({ product, onPress, styles, s }: { product: Prod
     prev.product.image_url === next.product.image_url
   );
 });
+ProductCard.displayName = 'ProductCard';
 
 function CartRow({
   item,
@@ -1929,5 +2285,69 @@ const createStyles = (s: (v: number) => number, width: number, height: number, i
   },
   pickerOptionTextSelected: {
     color: C.accentLight,
+  },
+  voidModal: {
+    width: '82%',
+    maxWidth: s(340),
+    backgroundColor: C.surface,
+    borderRadius: s(16),
+    padding: s(20),
+    borderWidth: 1,
+    borderColor: C.border,
+    alignItems: 'center',
+  },
+  voidModalTitle: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: s(18),
+    color: C.text,
+    marginTop: s(12),
+    textAlign: 'center',
+  },
+  voidModalBody: {
+    fontFamily: 'Inter_500Medium',
+    fontSize: s(14),
+    color: C.textSecondary,
+    marginTop: s(10),
+    marginBottom: s(20),
+    textAlign: 'center',
+    lineHeight: s(20),
+  },
+  voidModalBtns: {
+    flexDirection: 'row',
+    width: '100%',
+    gap: s(10),
+  },
+  voidModalBtn: {
+    flex: 1,
+    alignItems: 'stretch',
+  },
+  voidModalFillBtn: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: s(12),
+    borderRadius: s(10),
+  },
+  voidModalCancelBtn: {
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRadius: s(10),
+    paddingVertical: s(12),
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  voidModalConfirmBtn: {
+    backgroundColor: C.danger,
+  },
+  voidModalCancelText: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: s(14),
+    color: C.text,
+  },
+  voidModalConfirmText: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: s(14),
+    color: '#fff',
   },
 });

@@ -13,8 +13,10 @@ import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import Colors from '@/constants/colors';
-import { SaleRecord, getAllSales, deleteSaleFromQueue } from '@/lib/offlineDb';
-import { syncSalesQueue, syncSingleSale } from '@/lib/sync';
+import { SaleRecord, getAllSales, deleteSaleFromQueue, countCorruptSales, deleteCorruptSales, exportSalesQueue } from '@/lib/offlineDb';
+import * as Sharing from 'expo-sharing';
+import { File, Paths } from 'expo-file-system';
+import { syncSalesQueue, syncSingleSale, retryBlockedSales, MAX_ATTEMPTS } from '@/lib/sync';
 import { useAuth } from '@/context/AuthContext';
 
 const C = Colors.dark;
@@ -32,6 +34,10 @@ export default function SalesScreen() {
   const [isSyncing, setIsSyncing] = useState(false);
   const [retryingIds, setRetryingIds] = useState<Set<string>>(new Set());
   const [retryResults, setRetryResults] = useState<Record<string, { success: boolean; msg?: string }>>({});
+  const [bulkRetrying, setBulkRetrying] = useState(false);
+  const [corruptCount, setCorruptCount] = useState(0);
+  const [exporting, setExporting] = useState(false);
+  const [clearingCorrupt, setClearingCorrupt] = useState(false);
 
   const rotation = useSharedValue(0);
   const btnScale = useSharedValue(1);
@@ -46,7 +52,7 @@ export default function SalesScreen() {
     } else {
       rotation.value = withTiming(0);
     }
-  }, [isSyncing, refreshing]);
+  }, [isSyncing, refreshing, rotation]);
 
   const animatedIconStyle = useAnimatedStyle(() => ({
     transform: [{ rotate: `${rotation.value}deg` }],
@@ -59,6 +65,8 @@ export default function SalesScreen() {
   const load = useCallback(async () => {
     const list = await getAllSales();
     setSales(list);
+    const corrupt = await countCorruptSales();
+    setCorruptCount(corrupt);
   }, []);
 
   const onRefresh = async () => {
@@ -140,9 +148,92 @@ export default function SalesScreen() {
                 await deleteSaleFromQueue(id);
                 load();
                 if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-             } catch (e) {
+             } catch {
                 Alert.alert('Error', 'Failed to delete sale');
              }
+          }
+        }
+      ]
+    );
+  };
+
+  const handleRetryBlocked = async () => {
+    if (bulkRetrying) return;
+    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    setBulkRetrying(true);
+    try {
+      const result = await retryBlockedSales();
+      await load();
+      if (result.attempted > 0) {
+        if (result.synced > 0 && Platform.OS !== 'web') {
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        }
+        Alert.alert(
+          'Retry Blocked',
+          `Attempted ${result.attempted} sale(s).\n${result.synced} synced, ${result.failed} still failing.`,
+          [{ text: 'OK' }]
+        );
+      }
+    } catch {
+      Alert.alert('Error', 'Failed to retry blocked sales');
+    } finally {
+      setBulkRetrying(false);
+    }
+  };
+
+  const handleExportQueue = async () => {
+    if (exporting) return;
+    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    setExporting(true);
+    try {
+      const json = await exportSalesQueue();
+      if (Platform.OS === 'web') {
+        const blob = new Blob([json], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `pos-queue-${new Date().toISOString().slice(0, 10)}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+      } else {
+        const file = new File(Paths.cache, `pos-queue-${new Date().toISOString().slice(0, 10)}.json`);
+        file.write(json);
+        await Sharing.shareAsync(file.uri, {
+          mimeType: 'application/json',
+          dialogTitle: 'Export Sales Queue',
+        });
+      }
+      if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch {
+      Alert.alert('Export Failed', 'Could not export the sales queue.');
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const handleClearCorrupt = async () => {
+    if (clearingCorrupt) return;
+    Alert.alert(
+      'Clear Corrupt Records',
+      'These records are unreadable and will never sync. Removing them keeps the queue clean. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear',
+          style: 'destructive',
+          onPress: async () => {
+            setClearingCorrupt(true);
+            try {
+              const removed = await deleteCorruptSales();
+              await load();
+              if (removed > 0 && Platform.OS !== 'web') {
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              }
+            } catch {
+              Alert.alert('Error', 'Failed to clear corrupt records');
+            } finally {
+              setClearingCorrupt(false);
+            }
           }
         }
       ]
@@ -158,6 +249,8 @@ export default function SalesScreen() {
     const dateStr = date.toLocaleString();
     const isHealed = item.synced && (item.sync_attempts || 0) > 1;
     const isFailed = !item.synced && (item.sync_attempts || 0) > 0;
+    const attempts = item.sync_attempts || 0;
+    const isBlocked = !item.synced && attempts >= MAX_ATTEMPTS;
     
     const isRetrying = retryingIds.has(item.id);
     const result = retryResults[item.id];
@@ -201,14 +294,14 @@ export default function SalesScreen() {
                     pressed && { opacity: 0.7 }
                   ]}
                 >
-                  <Ionicons name="trash-outline" size={14} color={C.error} />
+                  <Ionicons name="trash-outline" size={14} color={C.danger} />
                 </Pressable>
               )}
               <Text style={[
                 styles.rowStatus, 
-                item.synced ? (isHealed ? styles.healed : styles.synced) : (isFailed ? styles.failed : styles.pending)
+                item.synced ? (isHealed ? styles.healed : styles.synced) : (isBlocked ? styles.blocked : (isFailed ? styles.failed : styles.pending))
               ]}>
-                {item.synced ? (isHealed ? 'Self-Healed' : 'Synced') : (isFailed ? 'Failed' : 'Pending')}
+                {item.synced ? (isHealed ? 'Self-Healed' : 'Synced') : (isBlocked ? 'Blocked' : (isFailed ? 'Failed' : 'Pending'))}
               </Text>
             </View>
             {isAdmin && (item.sync_attempts || 0) > 0 && (
@@ -234,6 +327,8 @@ export default function SalesScreen() {
     );
   };
 
+  const blockedCount = sales.filter(s => !s.synced && (s.sync_attempts || 0) >= MAX_ATTEMPTS).length;
+
   return (
     <View style={[styles.root, { paddingTop: topPad, paddingBottom: botPad }]}>
       <View style={styles.header}>
@@ -241,20 +336,70 @@ export default function SalesScreen() {
           <Ionicons name="arrow-back" size={22} color={C.text} />
         </Pressable>
         <Text style={styles.headerTitle}>Sales Queue</Text>
-        <Animated.View style={animatedBtnStyle}>
-          <Pressable 
-            onPress={handleManualSync} 
-            onPressIn={() => { btnScale.value = withSpring(0.9); }}
-            onPressOut={() => { btnScale.value = withSpring(1); }}
-            style={styles.syncBtn}
-            disabled={isSyncing}
-          >
-            <Animated.View style={animatedIconStyle}>
-              <Ionicons name="refresh" size={20} color={(isSyncing || refreshing) ? C.accent : C.textSecondary} />
-            </Animated.View>
-          </Pressable>
-        </Animated.View>
+        <View style={styles.headerActions}>
+          {isAdmin && (
+            <Pressable
+              onPress={handleExportQueue}
+              disabled={exporting}
+              style={styles.syncBtn}
+            >
+              <Ionicons name="share-outline" size={20} color={exporting ? C.accent : C.textSecondary} />
+            </Pressable>
+          )}
+          <Animated.View style={animatedBtnStyle}>
+            <Pressable 
+              onPress={handleManualSync} 
+              onPressIn={() => { btnScale.value = withSpring(0.9); }}
+              onPressOut={() => { btnScale.value = withSpring(1); }}
+              style={styles.syncBtn}
+              disabled={isSyncing}
+            >
+              <Animated.View style={animatedIconStyle}>
+                <Ionicons name="refresh" size={20} color={(isSyncing || refreshing) ? C.accent : C.textSecondary} />
+              </Animated.View>
+            </Pressable>
+          </Animated.View>
+        </View>
       </View>
+
+      {corruptCount > 0 && (
+        <View style={styles.corruptBanner}>
+          <Ionicons name="alert-circle-outline" size={16} color={C.warning} />
+          <Text style={styles.corruptText}>
+            {corruptCount} unreadable sale record(s) detected on this device.
+          </Text>
+          {isAdmin && (
+            <Pressable
+              onPress={handleClearCorrupt}
+              disabled={clearingCorrupt}
+              style={styles.corruptClearBtn}
+            >
+              {clearingCorrupt ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Text style={styles.corruptClearText}>Clear</Text>
+              )}
+            </Pressable>
+          )}
+        </View>
+      )}
+
+      {blockedCount > 0 && (
+        <Pressable
+          onPress={handleRetryBlocked}
+          disabled={bulkRetrying}
+          style={[styles.blockedBanner, bulkRetrying && { opacity: 0.6 }]}
+        >
+          {bulkRetrying ? (
+            <ActivityIndicator size="small" color="#fff" />
+          ) : (
+            <Ionicons name="refresh" size={16} color="#fff" />
+          )}
+          <Text style={styles.blockedBannerText}>
+            {bulkRetrying ? 'Retrying blocked sales...' : `Retry Blocked (${blockedCount})`}
+          </Text>
+        </Pressable>
+      )}
 
       <FlatList
         data={sales}
@@ -302,6 +447,11 @@ const styles = StyleSheet.create({
     fontSize: 18,
     color: C.text,
   },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   syncBtn: {
     width: 40,
     height: 40,
@@ -309,6 +459,56 @@ const styles = StyleSheet.create({
     backgroundColor: C.card,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  corruptBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginHorizontal: 16,
+    marginTop: 12,
+    marginBottom: 4,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: C.warningDim,
+    borderWidth: 1,
+    borderColor: C.warning + '40',
+  },
+  corruptText: {
+    flex: 1,
+    fontFamily: 'Inter_500Medium',
+    fontSize: 13,
+    color: C.warning,
+  },
+  corruptClearBtn: {
+    backgroundColor: C.danger,
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  corruptClearText: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 12,
+    color: '#fff',
+  },
+  blockedBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginHorizontal: 16,
+    marginTop: 12,
+    marginBottom: 4,
+    paddingVertical: 12,
+    borderRadius: 10,
+    backgroundColor: C.danger,
+  },
+  blockedBannerText: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 14,
+    color: '#fff',
   },
   list: {
     padding: 16,
@@ -346,6 +546,10 @@ const styles = StyleSheet.create({
   failed: {
     backgroundColor: C.warningDim,
     color: C.warning,
+  },
+  blocked: {
+    backgroundColor: C.dangerDim,
+    color: C.danger,
   },
   healed: {
     backgroundColor: C.accentDim,

@@ -1,16 +1,5 @@
 import { Platform, Alert } from 'react-native';
-
-/**
- * Generates a globally unique ID for sales.
- * Uses a hex timestamp + 12 random hex characters.
- * This prevents collisions across multiple terminals/shops.
- */
-export function generateSaleId(): string {
-  const timestamp = Date.now().toString(16); // ~11 hex chars
-  const randomSuffix = Math.random().toString(16).slice(2, 14); // 12 hex chars
-  return `${timestamp}-${randomSuffix}`;
-}
-
+import * as Crypto from 'expo-crypto';
 
 let db: any = null;
 
@@ -32,11 +21,36 @@ export interface SaleRecord {
   synced: boolean;
   sync_attempts?: number;
   last_error?: string | null;
+  last_attempt_at?: string | null;
   created_at: string;
 }
 
-// simple in-memory queue for web
-const webQueue: SaleRecord[] = [];
+// web queue persisted to localStorage so a reload never silently loses unsynced sales
+const WEB_QUEUE_KEY = 'pos_web_queue';
+
+function loadWebQueue(): SaleRecord[] {
+  if (Platform.OS !== 'web') return [];
+  try {
+    const stored = (globalThis as any).localStorage?.getItem(WEB_QUEUE_KEY);
+    if (!stored) return [];
+    const parsed = JSON.parse(stored);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (e) {
+    console.warn('[OfflineDB] Failed to restore web queue from localStorage:', e);
+    return [];
+  }
+}
+
+function persistWebQueue() {
+  if (Platform.OS !== 'web') return;
+  try {
+    (globalThis as any).localStorage?.setItem(WEB_QUEUE_KEY, JSON.stringify(webQueue));
+  } catch (e) {
+    console.warn('[OfflineDB] Failed to persist web queue:', e);
+  }
+}
+
+let webQueue: SaleRecord[] = loadWebQueue();
 
 export interface ProductRecord {
   id: string;
@@ -45,6 +59,8 @@ export interface ProductRecord {
   category?: string;
   image_url?: string;
   in_stock?: number;
+  shop_id?: string | null;
+  allow_negative_stock?: number | boolean;
 }
 
 export interface DiscountPlanRecord {
@@ -107,21 +123,60 @@ export interface OfflineAccessLog {
   synced: boolean;
 }
 
-const WEB_SAMPLE_PRODUCTS: ProductRecord[] = [
-  { id: '1', name: 'Bread White', price: 1.2, category: 'Bakery' },
-  { id: '2', name: 'Butter 250g', price: 6.0, category: 'Dairy' },
-  { id: '3', name: 'Coca Cola 330ml', price: 2.5, category: 'Beverages' },
-];
+const WEB_PRODUCTS_KEY = 'pos_products_cache';
 
-export async function getProducts(): Promise<ProductRecord[]> {
+function getWebProducts(shopId?: string | null): ProductRecord[] {
+  try {
+    const raw = (globalThis as any).localStorage?.getItem(WEB_PRODUCTS_KEY);
+    if (!raw) return [];
+    const cached = JSON.parse(raw);
+    const products: ProductRecord[] = Array.isArray(cached?.products) ? cached.products : [];
+    if (!shopId) return products;
+    return cached?.shopId === shopId ? products : [];
+  } catch (e) {
+    console.warn('[OfflineDB] getWebProducts error:', e);
+    return [];
+  }
+}
+
+function setWebProducts(products: ProductRecord[], shopId?: string | null): void {
+  if (Platform.OS !== 'web') return;
+  try {
+    (globalThis as any).localStorage?.setItem(
+      WEB_PRODUCTS_KEY,
+      JSON.stringify({ shopId: shopId ?? null, products })
+    );
+  } catch (e) {
+    console.warn('[OfflineDB] Failed to persist web products:', e);
+  }
+}
+
+/**
+ * Load cached products for a shop. When the shop has its own cached bucket it
+ * returns that; otherwise it falls back to the global bucket (shop_id IS NULL)
+ * so an offline-first device that has never fetched this shop's stock still
+ * shows a usable catalog.
+ */
+export async function getProducts(shopId?: string | null): Promise<ProductRecord[]> {
   if (Platform.OS === 'web') {
-    return Promise.resolve(WEB_SAMPLE_PRODUCTS);
+    return Promise.resolve(getWebProducts(shopId));
   }
   const localDb = getDb();
   if (!localDb) return [];
   try {
-    const rows = await localDb.getAllAsync(`SELECT * FROM products ORDER BY name ASC;`);
-    return rows as ProductRecord[];
+    if (shopId) {
+      const rows = await localDb.getAllAsync(
+        `SELECT * FROM products WHERE shop_id = ? ORDER BY name ASC;`,
+        [shopId]
+      );
+      if (rows.length > 0) return rows as ProductRecord[];
+      return (await localDb.getAllAsync(
+        `SELECT * FROM products WHERE shop_id IS NULL ORDER BY name ASC;`
+      )) as ProductRecord[];
+    }
+    return (await localDb.getAllAsync(
+      `SELECT * FROM products WHERE shop_id IS NULL ORDER BY name ASC;`
+    )) as ProductRecord[];
   } catch (e) {
     console.warn('[OfflineDB] getProducts error:', e);
     return [];
@@ -134,8 +189,8 @@ export async function addProduct(p: ProductRecord): Promise<void> {
   if (!localDb) return;
   try {
     await localDb.runAsync(
-      `INSERT OR REPLACE INTO products (id, name, price, category, image_url, in_stock) VALUES (?, ?, ?, ?, ?, ?);`,
-      [p.id, p.name, p.price, p.category || null, p.image_url || null, p.in_stock ?? 9999]
+      `INSERT OR REPLACE INTO products (id, name, price, category, image_url, in_stock, shop_id, allow_negative_stock) VALUES (?, ?, ?, ?, ?, ?, ?, ?);`,
+      [p.id, p.name, p.price, p.category || null, p.image_url || null, p.in_stock ?? 9999, p.shop_id ?? null, p.allow_negative_stock ? 1 : 0]
     );
   } catch (err) {
     console.error('[OfflineDB] addProduct error:', err);
@@ -145,18 +200,53 @@ export async function addProduct(p: ProductRecord): Promise<void> {
 
 /**
  * Bulk insert products within a single transaction for maximum performance.
+ * Replaces ONLY the cache bucket for the given shop (or the global bucket when
+ * shopId is null), so a fetch for one shop can never clobber another shop's
+ * cached catalog.
+ *
+ * Safety invariant: an EMPTY product list never clears an existing bucket.
+ * Products that have been downloaded are kept until a complete replacement
+ * arrives — a transient empty/truncated server response can't make the offline
+ * catalog disappear.
  */
-export async function bulkAddProducts(products: ProductRecord[]): Promise<void> {
-  if (Platform.OS === 'web' || products.length === 0) return;
+export async function bulkAddProducts(products: ProductRecord[], shopId?: string | null): Promise<void> {
+  if (Platform.OS === 'web') {
+    if (products.length === 0) return;
+    setWebProducts(products, shopId);
+    return;
+  }
   const localDb = getDb();
   if (!localDb) return;
 
+  // Never wipe a shop's cached catalog because the server returned nothing.
+  if (products.length === 0) return;
+
+  const key = shopId ?? null;
+
   try {
     await localDb.withTransactionAsync(async () => {
-      for (const p of products) {
+      if (key === null) {
+        await localDb.runAsync(`DELETE FROM products WHERE shop_id IS NULL;`);
+      } else {
+        await localDb.runAsync(`DELETE FROM products WHERE shop_id = ?;`, [key]);
+      }
+      // Batch inserts into multi-row statements (100 per statement) instead of
+      // issuing one runAsync per product — dramatically faster cache rebuilds,
+      // which matter when two tablets are invalidating each other's caches.
+      const CHUNK = 100;
+      for (let i = 0; i < products.length; i += CHUNK) {
+        const slice = products.slice(i, i + CHUNK);
+        const placeholders = slice.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
+        const params: any[] = [];
+        for (const p of slice) {
+          params.push(
+            p.id, p.name, p.price, p.category || null, p.image_url || null,
+            p.in_stock ?? 9999, key, p.allow_negative_stock ? 1 : 0
+          );
+        }
         await localDb.runAsync(
-          `INSERT OR REPLACE INTO products (id, name, price, category, image_url, in_stock) VALUES (?, ?, ?, ?, ?, ?);`,
-          [p.id, p.name, p.price, p.category || null, p.image_url || null, p.in_stock ?? 9999]
+          `INSERT OR REPLACE INTO products (id, name, price, category, image_url, in_stock, shop_id, allow_negative_stock) VALUES ${placeholders};`,
+          params
         );
       }
     });
@@ -167,7 +257,14 @@ export async function bulkAddProducts(products: ProductRecord[]): Promise<void> 
 }
 
 export async function clearProducts(): Promise<void> {
-  if (Platform.OS === 'web') return;
+  if (Platform.OS === 'web') {
+    try {
+      (globalThis as any).localStorage?.removeItem(WEB_PRODUCTS_KEY);
+    } catch (e) {
+      console.warn('[OfflineDB] clearWebProducts error:', e);
+    }
+    return;
+  }
   const localDb = getDb();
   if (!localDb) return;
   try {
@@ -186,12 +283,14 @@ export function initDb() {
   try {
     localDb.execSync(`
       CREATE TABLE IF NOT EXISTS products (
-        id TEXT PRIMARY KEY,
+        id TEXT NOT NULL,
         name TEXT,
         price REAL,
         category TEXT,
         image_url TEXT,
-        in_stock INTEGER DEFAULT 9999
+        in_stock INTEGER DEFAULT 9999,
+        shop_id TEXT,
+        PRIMARY KEY (id, shop_id)
       );
     `);
 
@@ -204,6 +303,45 @@ export function initDb() {
       }
     } catch (e) {
       console.warn('Migration for products.in_stock failed:', e);
+    }
+
+    // Migration: products cache is now per-shop. Rebuild the table with a
+    // composite primary key (id, shop_id) so a product can have a row for
+    // multiple shops. Existing rows become the "global" bucket (shop_id NULL).
+    try {
+      const productTableInfo = localDb.getAllSync(`PRAGMA table_info(products);`);
+      const hasShopId = productTableInfo.some((c: any) => c.name === 'shop_id');
+      if (!hasShopId) {
+        localDb.execSync(`
+          CREATE TABLE products_new (
+            id TEXT NOT NULL,
+            name TEXT,
+            price REAL,
+            category TEXT,
+            image_url TEXT,
+            in_stock INTEGER DEFAULT 9999,
+            shop_id TEXT,
+            PRIMARY KEY (id, shop_id)
+          );
+          INSERT INTO products_new (id, name, price, category, image_url, in_stock, shop_id)
+            SELECT id, name, price, category, image_url, in_stock, NULL FROM products;
+          DROP TABLE products;
+          ALTER TABLE products_new RENAME TO products;
+        `);
+      }
+    } catch (e) {
+      console.warn('Migration for products.shop_id failed:', e);
+    }
+
+    // Migration: add allow_negative_stock column for products that can oversell
+    try {
+      const productTableInfo = localDb.getAllSync(`PRAGMA table_info(products);`);
+      const hasAllowNegative = productTableInfo.some((c: any) => c.name === 'allow_negative_stock');
+      if (!hasAllowNegative) {
+        localDb.execSync(`ALTER TABLE products ADD COLUMN allow_negative_stock INTEGER DEFAULT 0;`);
+      }
+    } catch (e) {
+      console.warn('Migration for products.allow_negative_stock failed:', e);
     }
 
     localDb.execSync(`
@@ -222,6 +360,7 @@ export function initDb() {
         synced INTEGER DEFAULT 0,
         sync_attempts INTEGER DEFAULT 0,
         last_error TEXT,
+        last_attempt_at TEXT,
         created_at TEXT
       );
     `);
@@ -235,6 +374,9 @@ export function initDb() {
       }
       if (!columns.includes('last_error')) {
         localDb.execSync(`ALTER TABLE sales_queue ADD COLUMN last_error TEXT;`);
+      }
+      if (!columns.includes('last_attempt_at')) {
+        localDb.execSync(`ALTER TABLE sales_queue ADD COLUMN last_attempt_at TEXT;`);
       }
     } catch (e) {
       console.warn('Migration for sales_queue failed:', e);
@@ -381,6 +523,18 @@ export function initDb() {
       );
     `);
 
+    localDb.execSync(`
+      CREATE TABLE IF NOT EXISTS messages_queue (
+        id TEXT PRIMARY KEY,
+        data TEXT,
+        synced INTEGER DEFAULT 0,
+        sync_attempts INTEGER DEFAULT 0,
+        last_error TEXT,
+        last_attempt_at TEXT,
+        created_at TEXT
+      );
+    `);
+
     // seed a couple items if products table is empty
     const countRow = localDb.getFirstSync(`SELECT COUNT(*) as c FROM products;`);
     if (countRow && (countRow as any).c === 0) {
@@ -402,16 +556,14 @@ export function initDb() {
 
 
 /**
- * Generate a robust unique ID for sales.
- * Uses timestamp + 12 random hex characters for ~281 trillion combinations
- * at any given millisecond, virtually eliminating collision risk.
+ * Generate a globally unique ID for sales.
+ * The hex timestamp prefix is for readability/traceability only — uniqueness
+ * comes from the appended version-4 UUID, which has 122 random bits.
+ * Collision probability is ~2^-122 per id: effectively impossible across every
+ * shop, cashier, terminal, date and time, and the space can never be exhausted.
  */
 export function generateSaleId(): string {
-  const timestamp = Date.now().toString(36);
-  const randomPart = Array.from({ length: 12 }, () =>
-    Math.floor(Math.random() * 16).toString(16)
-  ).join('');
-  return `${timestamp}-${randomPart}`;
+  return `${Date.now().toString(16)}-${Crypto.randomUUID()}`;
 }
 
 /**
@@ -442,6 +594,7 @@ export async function queueSale(sale: any): Promise<void> {
       created_at: new Date().toISOString(),
     };
     webQueue.push(rec);
+    persistWebQueue();
     return;
   }
 
@@ -468,14 +621,18 @@ export async function queueSale(sale: any): Promise<void> {
 /**
  * Atomically queues a sale AND deducts stock in a single SQLite transaction.
  * If either operation fails, both are rolled back — preventing inconsistent state.
+ *
+ * Returns the id of the recorded sale. Idempotent: if a sale with the same
+ * order id is already queued, it is treated as already recorded and stock is
+ * NOT deducted a second time.
  */
 export async function queueSaleAtomically(
   sale: any,
   stockItems: { product_id: string; quantity: number }[]
-): Promise<void> {
+): Promise<string> {
   if (Platform.OS === 'web') {
     await queueSale(sale);
-    return;
+    return sale.orderId || generateSaleId();
   }
 
   validateSale(sale);
@@ -489,21 +646,34 @@ export async function queueSaleAtomically(
 
   try {
     await localDb.withTransactionAsync(async () => {
-      // 1. Insert the sale
-      await localDb.runAsync(
-        `INSERT INTO sales_queue (id, data, synced, created_at) VALUES (?, ?, ?, ?);`,
+      // 1. Insert the sale (INSERT OR IGNORE keeps this idempotent: if the
+      //    order id already exists, skip re-insert AND skip stock deduction)
+      const result = await localDb.runAsync(
+        `INSERT OR IGNORE INTO sales_queue (id, data, synced, created_at) VALUES (?, ?, ?, ?);`,
         [id, dataStr, 0, created]
       );
+      if (result && (result as any).changes === 0) return;
 
-      // 2. Deduct stock for each item
+      // 2. Deduct stock for each item. With the per-shop cache (composite PK
+      //    id+shop_id) the deduction MUST be scoped to the sale's shop, or it
+      //    would wrongly reduce stock in every other shop's cached bucket.
+      //    The global (shop_id IS NULL) bucket is updated too so pre-upgrade
+      //    caches stay consistent as the offline fallback source.
       for (const item of stockItems) {
+        if (sale.shopId) {
+          await localDb.runAsync(
+            `UPDATE products SET in_stock = CASE WHEN allow_negative_stock = 1 THEN in_stock - ? ELSE MAX(0, in_stock - ?) END WHERE id = ? AND shop_id = ?;`,
+            [item.quantity, item.quantity, item.product_id, sale.shopId]
+          );
+        }
         await localDb.runAsync(
-          `UPDATE products SET in_stock = MAX(0, in_stock - ?) WHERE id = ?;`,
-          [item.quantity, item.product_id]
+          `UPDATE products SET in_stock = CASE WHEN allow_negative_stock = 1 THEN in_stock - ? ELSE MAX(0, in_stock - ?) END WHERE id = ? AND shop_id IS NULL;`,
+          [item.quantity, item.quantity, item.product_id]
         );
       }
     });
     console.log(`[OfflineDB] Sale ${id} queued + stock deducted atomically.`);
+    return id;
   } catch (err) {
     console.error(`[OfflineDB] Atomic sale+stock failed for ${id}:`, err);
     throw err;
@@ -522,6 +692,7 @@ function parseSaleRow(r: any): SaleRecord | null {
       synced: r.synced === 1,
       sync_attempts: r.sync_attempts || 0,
       last_error: r.last_error || null,
+      last_attempt_at: r.last_attempt_at || null,
       created_at: r.created_at,
     };
   } catch (e) {
@@ -582,10 +753,67 @@ export async function getAllSales(): Promise<SaleRecord[]> {
   }
 }
 
+/**
+ * Counts sales_queue rows whose stored JSON is unreadable.
+ * Corrupt rows are invisible to sync, reports and the sales screen, so this
+ * lets the UI warn an admin that the device holds unrecoverable records.
+ */
+export async function countCorruptSales(): Promise<number> {
+  if (Platform.OS === 'web') return 0;
+  const localDb = getDb();
+  if (!localDb) return 0;
+  try {
+    const rows = await localDb.getAllAsync(`SELECT * FROM sales_queue;`);
+    let corrupt = 0;
+    for (const r of rows) {
+      if (!parseSaleRow(r)) corrupt++;
+    }
+    return corrupt;
+  } catch (err) {
+    console.error('[OfflineDB] countCorruptSales error:', err);
+    return 0;
+  }
+}
+
+/**
+ * Deletes rows whose stored JSON is unreadable so they stop silently
+ * occupying the queue. Returns how many were removed.
+ */
+export async function deleteCorruptSales(): Promise<number> {
+  if (Platform.OS === 'web') return 0;
+  const localDb = getDb();
+  if (!localDb) return 0;
+  try {
+    const rows = await localDb.getAllAsync(`SELECT * FROM sales_queue;`);
+    const corruptIds: string[] = [];
+    for (const r of rows) {
+      if (!parseSaleRow(r)) corruptIds.push(r.id);
+    }
+    if (corruptIds.length === 0) return 0;
+    const placeholders = corruptIds.map(() => '?').join(',');
+    await localDb.runAsync(`DELETE FROM sales_queue WHERE id IN (${placeholders});`, corruptIds);
+    console.log(`[OfflineDB] Deleted ${corruptIds.length} corrupt sale row(s).`);
+    return corruptIds.length;
+  } catch (err) {
+    console.error('[OfflineDB] deleteCorruptSales error:', err);
+    return 0;
+  }
+}
+
+/**
+ * Returns the full local sales queue as a JSON string for manual recovery
+ * when normal sync is unavailable.
+ */
+export async function exportSalesQueue(): Promise<string> {
+  const all = await getAllSales();
+  return JSON.stringify({ exported_at: new Date().toISOString(), count: all.length, sales: all }, null, 2);
+}
+
 export async function markSaleSynced(id: string): Promise<void> {
   if (Platform.OS === 'web') {
     const rec = webQueue.find(r => r.id === id);
     if (rec) rec.synced = true;
+    persistWebQueue();
     return;
   }
 
@@ -607,9 +835,10 @@ export async function updateSaleSyncProgress(id: string, attempts: number, error
   const localDb = getDb();
   if (!localDb) return;
   try {
+    const lastAttemptAt = new Date().toISOString();
     await localDb.runAsync(
-      `UPDATE sales_queue SET sync_attempts = ?, last_error = ? WHERE id = ?;`,
-      [attempts, error, id]
+      `UPDATE sales_queue SET sync_attempts = ?, last_error = ?, last_attempt_at = ? WHERE id = ?;`,
+      [attempts, error, lastAttemptAt, id]
     );
   } catch (err) {
     console.error('[OfflineDB] updateSaleSyncProgress error:', err);
@@ -620,6 +849,7 @@ export async function deleteSaleFromQueue(id: string): Promise<void> {
   if (Platform.OS === 'web') {
     const idx = webQueue.findIndex(r => r.id === id);
     if (idx !== -1) webQueue.splice(idx, 1);
+    persistWebQueue();
     return;
   }
 
@@ -986,10 +1216,9 @@ export async function deductStockLocally(items: { product_id: string, quantity: 
   try {
     await localDb.withTransactionAsync(async () => {
       for (const item of items) {
-        // Use MAX(0, in_stock - ?) to ensure stock doesn't go negative
         await localDb.runAsync(
-          `UPDATE products SET in_stock = MAX(0, in_stock - ?) WHERE id = ?;`,
-          [item.quantity, item.product_id]
+          `UPDATE products SET in_stock = CASE WHEN allow_negative_stock = 1 THEN in_stock - ? ELSE MAX(0, in_stock - ?) END WHERE id = ?;`,
+          [item.quantity, item.quantity, item.product_id]
         );
       }
     });
@@ -1037,6 +1266,131 @@ export async function markAccessLogSynced(id: string): Promise<void> {
   } catch (err) {
     console.error('[OfflineDB] markAccessLogSynced error:', err);
     throw err;
+  }
+}
+
+// --- Cashier Message functions ---
+
+export interface CashierMessageRecord {
+  id: string;
+  data: Record<string, any>;
+  synced: boolean;
+  sync_attempts?: number;
+  last_error?: string | null;
+  last_attempt_at?: string | null;
+  created_at: string;
+}
+
+export const MESSAGE_CATEGORIES = ['Stock Issue', 'Order Request', 'Concern', 'Equipment', 'Other'] as const;
+
+const MESSAGE_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Queues a cashier message locally. Returns the generated client_msg_id.
+ * On web nothing is persisted here — the caller performs a direct insert
+ * when a connection is available.
+ *
+ * Contract: employee_id must be a real UUID or null. Placeholder values
+ * like 'system' are coerced to null because cashier_messages.employee_id
+ * is a uuid column and would reject them.
+ */
+export async function queueMessage(msg: {
+  shop_id?: string | null;
+  message_text: string;
+  category?: string;
+  employee_id?: string | null;
+  employee_name?: string | null;
+  created_at?: string;
+}): Promise<string> {
+  const text = (msg.message_text || '').trim();
+  if (!text) throw new Error('Message text is empty');
+
+  const id = generateSaleId();
+  const payload = {
+    shop_id: msg.shop_id || null,
+    message_text: text,
+    category: msg.category || 'Other',
+    employee_id: msg.employee_id && MESSAGE_UUID_REGEX.test(msg.employee_id) ? msg.employee_id : null,
+    employee_name: msg.employee_name || null,
+    created_at: msg.created_at || new Date().toISOString(),
+  };
+
+  if (Platform.OS === 'web') return id;
+
+  const localDb = getDb();
+  if (!localDb) return id;
+
+  try {
+    await localDb.runAsync(
+      `INSERT INTO messages_queue (id, data, synced, created_at) VALUES (?, ?, ?, ?);`,
+      [id, JSON.stringify(payload), 0, payload.created_at]
+    );
+    console.log(`[OfflineDB] Message ${id} queued for sync.`);
+    return id;
+  } catch (err) {
+    console.error('[OfflineDB] queueMessage error:', err);
+    throw err;
+  }
+}
+
+export async function getPendingMessages(): Promise<CashierMessageRecord[]> {
+  if (Platform.OS === 'web') return [];
+  const localDb = getDb();
+  if (!localDb) return [];
+
+  try {
+    const rows = await localDb.getAllAsync(`SELECT * FROM messages_queue WHERE synced = 0 ORDER BY created_at ASC;`);
+    const results: CashierMessageRecord[] = [];
+    for (const r of rows as any[]) {
+      try {
+        results.push({
+          id: r.id,
+          data: typeof r.data === 'string' ? JSON.parse(r.data) : r.data,
+          synced: r.synced === 1,
+          sync_attempts: r.sync_attempts || 0,
+          last_error: r.last_error || null,
+          last_attempt_at: r.last_attempt_at || null,
+          created_at: r.created_at,
+        });
+      } catch (e) {
+        console.error(`[OfflineDB] Corrupt message row ${r?.id}, skipping:`, e);
+      }
+    }
+    return results;
+  } catch (err) {
+    console.error('[OfflineDB] getPendingMessages error:', err);
+    return [];
+  }
+}
+
+export async function markMessageSynced(id: string): Promise<void> {
+  if (Platform.OS === 'web') return;
+  const localDb = getDb();
+  if (!localDb) return;
+
+  try {
+    await localDb.runAsync(
+      `UPDATE messages_queue SET synced = 1 WHERE id = ?;`,
+      [id]
+    );
+  } catch (err) {
+    console.error('[OfflineDB] markMessageSynced error:', err);
+    throw err;
+  }
+}
+
+export async function updateMessageSyncProgress(id: string, attempts: number, error: string | null): Promise<void> {
+  if (Platform.OS === 'web') return;
+  const localDb = getDb();
+  if (!localDb) return;
+  try {
+    const lastAttemptAt = new Date().toISOString();
+    await localDb.runAsync(
+      `UPDATE messages_queue SET sync_attempts = ?, last_error = ?, last_attempt_at = ? WHERE id = ?;`,
+      [attempts, error, lastAttemptAt, id]
+    );
+  } catch (err) {
+    console.error('[OfflineDB] updateMessageSyncProgress error:', err);
   }
 }
 

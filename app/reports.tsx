@@ -27,8 +27,8 @@ import {
 import { router } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import Colors from '@/constants/colors';
-import { useAuth } from '@/context/AuthContext';
 import { getAllSales, SaleRecord } from '@/lib/offlineDb';
+import { MAX_ATTEMPTS } from '@/lib/sync';
 
 const C = Colors.dark;
 
@@ -39,7 +39,6 @@ const FILTERS: FilterType[] = ['Today', 'Yesterday', 'This Week', 'Last Week', '
 const TABS: TabType[] = ['Summary', 'By Day', 'By Product', 'By Category', 'Payment', 'Sales'];
 
 export default function ReportsScreen() {
-  const { shopId } = useAuth();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const scale = width / 1024;
@@ -63,7 +62,7 @@ export default function ReportsScreen() {
     } else {
       rotation.value = withTiming(0);
     }
-  }, [loading]);
+  }, [loading, rotation]);
 
   const animatedIconStyle = useAnimatedStyle(() => ({
     transform: [{ rotate: `${rotation.value}deg` }],
@@ -77,15 +76,14 @@ export default function ReportsScreen() {
     setLoading(true);
     try {
       const all = await getAllSales();
-      const shopSales = all.filter(s => s.data?.shopId === shopId || s.data?.shop_id === shopId);
-      setRawSales(shopSales);
+      setRawSales(all);
     } catch (e) {
       console.error('[Reports] Failed to load local sales:', e);
     } finally {
       // Small artificial delay for animation smoothness if it loads too fast
       setTimeout(() => setLoading(false), 600);
     }
-  }, [shopId]);
+  }, []);
 
   useEffect(() => {
     loadData();
@@ -235,6 +233,8 @@ export default function ReportsScreen() {
         todayRevenue,
         todayCount: todaySalesCount
       },
+      unsyncedCount: filteredSales.filter(s => !s.synced).length,
+      unsyncedRevenue: filteredSales.filter(s => !s.synced).reduce((acc, s) => acc + (s.data?.total || 0), 0),
       byDay: Object.values(byDay).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()),
       byPayment: Object.values(byPayment).sort((a, b) => b.revenue - a.revenue),
       byProduct: Object.values(byProduct).sort((a, b) => b.revenue - a.revenue),
@@ -252,24 +252,6 @@ export default function ReportsScreen() {
     if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setActiveTab(t);
   };
-
-  if (!shopId) {
-    return (
-      <View style={[styles.root, { paddingTop: insets.top }]}>
-        <View style={styles.header}>
-          <Pressable onPress={() => router.back()} style={styles.backBtn}>
-            <Ionicons name="arrow-back" size={s(22)} color={C.text} />
-          </Pressable>
-          <Text style={styles.headerTitle}>Local Reports</Text>
-        </View>
-        <View style={styles.centerState}>
-          <Feather name="alert-triangle" size={s(44)} color={C.warning} />
-          <Text style={styles.stateText}>No shop assigned to this terminal</Text>
-          <Text style={styles.stateSubText}>Please assign a shop in Settings to view local reports.</Text>
-        </View>
-      </View>
-    );
-  }
 
   const renderSummary = () => (
     <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.tabContent}>
@@ -320,6 +302,20 @@ export default function ReportsScreen() {
           s={s} 
         />
       </View>
+
+      {reportData.unsyncedCount > 0 ? (
+        <View style={styles.reconBannerWarn}>
+          <Ionicons name="cloud-offline-outline" size={s(18)} color={C.danger} />
+          <Text style={styles.reconTextWarn}>
+            {reportData.unsyncedCount} sale(s) / ${reportData.unsyncedRevenue.toFixed(2)} not yet on the dashboard
+          </Text>
+        </View>
+      ) : (
+        <View style={styles.reconBannerOk}>
+          <Ionicons name="cloud-done-outline" size={s(18)} color={C.success} />
+          <Text style={styles.reconTextOk}>All {reportData.summary.count} sale(s) synced to the dashboard</Text>
+        </View>
+      )}
     </ScrollView>
   );
 
@@ -402,15 +398,22 @@ export default function ReportsScreen() {
       contentContainerStyle={styles.tabContent}
       renderItem={({ item }) => {
         const d = item.data;
+        const attempts = item.sync_attempts || 0;
+        const isHealed = item.synced && attempts > 1;
+        const isBlocked = !item.synced && attempts >= MAX_ATTEMPTS;
+        const isFailed = !item.synced && attempts > 0;
+        const statusStyle = isHealed ? styles.healed : item.synced ? styles.synced : isBlocked ? styles.blocked : isFailed ? styles.failed : styles.unsynced;
+        const statusTextStyle = isHealed ? styles.healedText : item.synced ? styles.syncedText : isBlocked ? styles.blockedText : isFailed ? styles.failedText : styles.unsyncedText;
+        const statusLabel = isHealed ? 'SELF-HEALED' : item.synced ? 'SYNCED' : isBlocked ? 'BLOCKED' : isFailed ? 'FAILED' : 'PENDING';
         return (
           <View style={styles.saleItem}>
             <View style={styles.saleHeader}>
               <Text style={styles.saleTime}>
                 {new Date(d.createdAt || item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
               </Text>
-              <View style={[styles.syncBadge, item.synced ? styles.synced : styles.unsynced]}>
-                <Text style={[styles.syncBadgeText, item.synced ? styles.syncedText : styles.unsyncedText]}>
-                  {item.synced ? 'SYNCED' : 'PENDING'}
+              <View style={[styles.syncBadge, statusStyle]}>
+                <Text style={[styles.syncBadgeText, statusTextStyle]}>
+                  {statusLabel}
                 </Text>
               </View>
             </View>
@@ -732,6 +735,15 @@ const styles = StyleSheet.create({
   unsynced: {
     backgroundColor: 'rgba(255, 152, 0, 0.15)',
   },
+  failed: {
+    backgroundColor: 'rgba(255, 152, 0, 0.15)',
+  },
+  blocked: {
+    backgroundColor: 'rgba(244, 67, 54, 0.15)',
+  },
+  healed: {
+    backgroundColor: 'rgba(0, 188, 212, 0.15)',
+  },
   syncBadgeText: {
     fontFamily: 'Inter_700Bold',
     fontSize: 8,
@@ -741,6 +753,49 @@ const styles = StyleSheet.create({
   },
   unsyncedText: {
     color: '#FF9800',
+  },
+  failedText: {
+    color: '#FF9800',
+  },
+  blockedText: {
+    color: '#F44336',
+  },
+  healedText: {
+    color: '#00BCD4',
+  },
+  reconBannerWarn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: C.dangerDim,
+    borderWidth: 1,
+    borderColor: C.danger + '40',
+    borderRadius: 12,
+    padding: 14,
+    marginTop: 4,
+  },
+  reconTextWarn: {
+    flex: 1,
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 13,
+    color: C.danger,
+  },
+  reconBannerOk: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(76, 175, 80, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(76, 175, 80, 0.3)',
+    borderRadius: 12,
+    padding: 14,
+    marginTop: 4,
+  },
+  reconTextOk: {
+    flex: 1,
+    fontFamily: 'Inter_500Medium',
+    fontSize: 13,
+    color: '#4CAF50',
   },
   saleItems: {
     fontFamily: 'Inter_400Regular',

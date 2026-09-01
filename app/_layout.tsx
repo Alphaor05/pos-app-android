@@ -1,5 +1,6 @@
 /** vCache_101 **/
 import React, { useEffect, useState } from "react";
+import { Alert } from "react-native";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Stack, router, useSegments } from "expo-router";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -47,6 +48,7 @@ function RootLayoutNav() {
       <Stack.Screen name="pos" />
       <Stack.Screen name="settings" />
       <Stack.Screen name="sales" />
+      <Stack.Screen name="messages" />
     </Stack>
   );
 }
@@ -68,8 +70,6 @@ export default function RootLayout() {
         // Run integrity check after DB init — detect corruption early
         const isHealthy = checkDbIntegrity();
         if (!isHealthy) {
-          // Import Alert here to avoid issues during module init
-          const { Alert } = require('react-native');
           Alert.alert(
             'Database Warning',
             'The local database may be corrupted. Some sales records could be missing or inaccurate. Please contact your admin.',

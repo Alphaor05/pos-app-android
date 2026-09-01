@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useMemo, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useMemo, useCallback, ReactNode } from 'react';
 import { Alert } from 'react-native';
 import { Product } from '@/data/products';
 
@@ -22,11 +22,11 @@ const CartContext = createContext<CartContextValue | null>(null);
 export function CartProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<CartItem[]>([]);
 
-  const addItem = (product: Product) => {
+  const addItem = useCallback((product: Product) => {
     setItems(prev => {
       const existing = prev.find(i => String(i.product.id) === String(product.id));
       if (existing) {
-        if (existing.quantity >= (product.inStock ?? 0)) {
+        if (!product.allowNegativeStock && existing.quantity >= (product.inStock ?? 0)) {
           Alert.alert('Out of Stock', `Cannot add more ${product.name}. Only ${product.inStock} items are in stock.`);
           return prev;
         }
@@ -37,20 +37,20 @@ export function CartProvider({ children }: { children: ReactNode }) {
         );
       }
 
-      if ((product.inStock ?? 0) <= 0) {
+      if (!product.allowNegativeStock && (product.inStock ?? 0) <= 0) {
         Alert.alert('Out of Stock', `${product.name} is currently out of stock.`);
         return prev;
       }
 
       return [...prev, { product, quantity: 1 }];
     });
-  };
+  }, []);
 
-  const removeItem = (productId: string) => {
+  const removeItem = useCallback((productId: string) => {
     setItems(prev => prev.filter(i => String(i.product.id) !== productId));
-  };
+  }, []);
 
-  const updateQuantity = (productId: string, quantity: number) => {
+  const updateQuantity = useCallback((productId: string, quantity: number) => {
     if (quantity <= 0) {
       removeItem(productId);
       return;
@@ -59,7 +59,7 @@ export function CartProvider({ children }: { children: ReactNode }) {
     setItems(prev =>
       prev.map(i => {
         if (String(i.product.id) === productId) {
-          if (quantity > (i.product.inStock ?? 0)) {
+          if (!i.product.allowNegativeStock && quantity > (i.product.inStock ?? 0)) {
             Alert.alert('Out of Stock', `Cannot increase quantity. Only ${i.product.inStock} items are in stock.`);
             return i;
           }
@@ -68,9 +68,11 @@ export function CartProvider({ children }: { children: ReactNode }) {
         return i;
       })
     );
-  };
+  }, [removeItem]);
 
-  const clearCart = () => setItems([]);
+  const clearCart = useCallback(() => {
+    setItems([]);
+  }, []);
 
   const total = useMemo(
     () => Math.round(items.reduce((sum, i) => sum + i.product.price * i.quantity, 0) * 100) / 100,
@@ -90,7 +92,7 @@ export function CartProvider({ children }: { children: ReactNode }) {
     clearCart,
     total,
     itemCount,
-  }), [items, total, itemCount]);
+  }), [items, total, itemCount, addItem, removeItem, updateQuantity, clearCart]);
 
   return <CartContext.Provider value={value}>{children}</CartContext.Provider>;
 }
