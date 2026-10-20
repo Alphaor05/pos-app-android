@@ -65,10 +65,14 @@ export default function RootLayout() {
 
   useEffect(() => {
     async function prepare() {
+      console.log('[RootLayout] Starting app preparation');
       try {
+        console.log('[RootLayout] Initializing database');
         initDb();
+        console.log('[RootLayout] Database initialized');
         // Run integrity check after DB init — detect corruption early
         const isHealthy = checkDbIntegrity();
+        console.log('[RootLayout] DB integrity check:', isHealthy);
         if (!isHealthy) {
           Alert.alert(
             'Database Warning',
@@ -76,10 +80,13 @@ export default function RootLayout() {
             [{ text: 'OK' }]
           );
         }
+        console.log('[RootLayout] Initializing sync');
         initSync();
+        console.log('[RootLayout] Sync initialized');
       } catch (e) {
-        console.warn('Initialization error:', e);
+        console.error('[RootLayout] Initialization error:', e);
       } finally {
+        console.log('[RootLayout] Setting appIsReady = true');
         setAppIsReady(true);
       }
     }

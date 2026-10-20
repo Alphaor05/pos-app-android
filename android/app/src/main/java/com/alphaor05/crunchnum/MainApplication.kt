@@ -27,14 +27,20 @@ class MainApplication : Application(), ReactApplication {
   }
 
   override fun onCreate() {
+    android.util.Log.d("MainApplication", "onCreate started")
     super.onCreate()
+    android.util.Log.d("MainApplication", "super.onCreate completed")
     DefaultNewArchitectureEntryPoint.releaseLevel = try {
       ReleaseLevel.valueOf(BuildConfig.REACT_NATIVE_RELEASE_LEVEL.uppercase())
     } catch (e: IllegalArgumentException) {
+      android.util.Log.w("MainApplication", "Invalid release level, using STABLE", e)
       ReleaseLevel.STABLE
     }
+    android.util.Log.d("MainApplication", "About to load React Native")
     loadReactNative(this)
+    android.util.Log.d("MainApplication", "React Native loaded")
     ApplicationLifecycleDispatcher.onApplicationCreate(this)
+    android.util.Log.d("MainApplication", "onCreate completed")
   }
 
   override fun onConfigurationChanged(newConfig: Configuration) {

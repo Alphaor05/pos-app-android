@@ -17,10 +17,13 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 
 class MainActivity : ReactActivity() {
+  private var printingServiceInitialized = false
+
   override fun onCreate(savedInstanceState: Bundle?) {
     Log.d("MainActivity", "onCreate fired")
     SplashScreenManager.registerOnActivity(this)
     super.onCreate(null)
+    Log.d("MainActivity", "super.onCreate completed, starting permission check")
     checkPermissionsAndInit()
   }
 
@@ -34,28 +37,40 @@ class MainActivity : ReactActivity() {
         permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
         permissions.add(Manifest.permission.BLUETOOTH_SCAN)
     }
-    
+    Log.d("MainActivity", "Requesting ${permissions.size} permissions: ${permissions.joinToString()}")
     // Always request — no filter, no skip
     ActivityCompat.requestPermissions(this, permissions.toTypedArray(), 101)
+    Log.d("MainActivity", "Permission request sent, waiting for callback")
   }
 
   override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+    Log.d("MainActivity", "onRequestPermissionsResult called, requestCode=$requestCode")
     super.onRequestPermissionsResult(requestCode, permissions, grantResults)
     if (requestCode == 101) {
+        Log.d("MainActivity", "Processing permission results for requestCode 101")
         // Log what was granted and what was denied
         permissions.forEachIndexed { index, permission ->
             val result = if (grantResults[index] == PackageManager.PERMISSION_GRANTED) "GRANTED" else "DENIED"
             Log.d("MainActivity", "Permission $permission: $result")
         }
         // Always initialize — let PrinterManager handle missing permissions gracefully
+        Log.d("MainActivity", "Starting initPrintingService")
         initPrintingService()
+        Log.d("MainActivity", "initPrintingService completed")
     }
   }
 
   private fun initPrintingService() {
+    if (printingServiceInitialized) {
+      Log.d("MainActivity", "Printing service already initialized, skipping")
+      return
+    }
+    printingServiceInitialized = true
+    Log.d("MainActivity", "Initializing printing service")
     val printerManager = PrinterManager(this)
     val supabaseManager = SupabaseManager(printerManager)
     supabaseManager.startListening()
+    Log.d("MainActivity", "Printing service initialized")
   }
 
   /**

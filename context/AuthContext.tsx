@@ -60,15 +60,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // Restore session from AsyncStorage on mount
   useEffect(() => {
+    console.log('[AuthContext] Starting session restoration');
     Promise.all([
       AsyncStorage.getItem(SESSION_KEY),
       AsyncStorage.getItem('pos_id')
     ]).then(([stored, storedShopId]) => {
+      console.log('[AuthContext] AsyncStorage read complete, stored:', !!stored, 'shopId:', !!storedShopId);
       if (stored) {
         try {
           const session: EmployeeSession = JSON.parse(stored);
           setEmployee(session);
-        } catch { }
+          console.log('[AuthContext] Session restored:', session.employee_id);
+        } catch (e) {
+          console.error('[AuthContext] Failed to parse session', e);
+        }
       }
       if (storedShopId) {
         const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -80,6 +85,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setStateShopId(storedShopId);
         }
       }
+      console.log('[AuthContext] Setting isLoading = false');
+      setIsLoading(false);
+    }).catch(e => {
+      console.error('[AuthContext] AsyncStorage error:', e);
       setIsLoading(false);
     });
   }, []);
