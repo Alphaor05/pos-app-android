@@ -5,6 +5,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '@/lib/supabase';
 import { getEmployeeByPin, queueAccessLog, updateAccessLogLogout } from '@/lib/offlineDb';
 import { syncEmployees, syncAccessLogsQueue } from '@/lib/sync';
+import { dlog } from '@/lib/debugLog';
 
 const SESSION_KEY = 'pos_employee_session';
 
@@ -61,6 +62,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Restore session from AsyncStorage on mount
   useEffect(() => {
     console.log('[AuthContext] Starting session restoration');
+    dlog('auth restore start');
     Promise.all([
       AsyncStorage.getItem(SESSION_KEY),
       AsyncStorage.getItem('pos_id')
@@ -86,6 +88,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
       }
       console.log('[AuthContext] Setting isLoading = false');
+      dlog('auth restore done');
       setIsLoading(false);
     }).catch(e => {
       console.error('[AuthContext] AsyncStorage error:', e);

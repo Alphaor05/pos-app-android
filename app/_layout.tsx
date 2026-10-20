@@ -20,18 +20,28 @@ import {
 import { initDb, checkDbIntegrity } from '@/lib/offlineDb';
 import { initSync } from '@/lib/sync';
 import * as SplashScreen from 'expo-splash-screen';
+import { dlog } from '@/lib/debugLog';
 
 SplashScreen.preventAutoHideAsync();
+dlog('js bundle loaded');
 
 function RootLayoutNav() {
   const { isAuthenticated, isLoading } = useAuth();
   const segments = useSegments();
 
+  dlog(`nav rendered: isLoading=${isLoading}, isAuthenticated=${isAuthenticated}`);
+
   useEffect(() => {
-    if (isLoading) return;
+    dlog('nav effect running');
+    if (isLoading) {
+      dlog('nav waiting for auth');
+      return;
+    }
 
     const segs = segments as string[];
     const isLoginPage = segs.length === 0;
+
+    dlog(`nav routing: isLoginPage=${isLoginPage}, isAuthenticated=${isAuthenticated}`);
 
     if (!isAuthenticated && !isLoginPage) {
       router.replace('/');
@@ -40,8 +50,12 @@ function RootLayoutNav() {
     }
   }, [isAuthenticated, isLoading, segments]);
 
-  if (isLoading) return null;
+  if (isLoading) {
+    dlog('nav returning null (loading)');
+    return null;
+  }
 
+  dlog('nav rendering Stack');
   return (
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Screen name="index" />
@@ -61,15 +75,22 @@ export default function RootLayout() {
     Inter_700Bold,
   });
 
+  if (fontsLoaded) {
+    dlog('fonts loaded');
+  }
+
   const [appIsReady, setAppIsReady] = useState(false);
 
   useEffect(() => {
+    dlog('layout mounted');
     async function prepare() {
       console.log('[RootLayout] Starting app preparation');
+      dlog('db init start');
       try {
         console.log('[RootLayout] Initializing database');
         initDb();
         console.log('[RootLayout] Database initialized');
+        dlog('db init done');
         // Run integrity check after DB init — detect corruption early
         const isHealthy = checkDbIntegrity();
         console.log('[RootLayout] DB integrity check:', isHealthy);
@@ -95,6 +116,7 @@ export default function RootLayout() {
 
   useEffect(() => {
     if (fontsLoaded && appIsReady) {
+      dlog('splash hide called');
       SplashScreen.hideAsync();
     }
   }, [fontsLoaded, appIsReady]);

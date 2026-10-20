@@ -23,6 +23,7 @@ import * as Haptics from 'expo-haptics';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAuth } from '@/context/AuthContext';
 import Colors from '@/constants/colors';
+import { dlog } from '@/lib/debugLog';
 
 const C = Colors.dark;
 const PIN_LENGTH = 4;
@@ -62,11 +63,16 @@ function PinDot({ filled, index }: { filled: boolean; index: number }) {
 }
 
 export default function LoginScreen() {
+  dlog('login screen component created');
   const { login } = useAuth();
   const insets = useSafeAreaInsets();
   const [pin, setPin] = useState('');
   const [error, setError] = useState(false);
   const shakeX = useSharedValue(0);
+
+  useEffect(() => {
+    dlog('login screen mounted');
+  }, []);
 
   const shake = () => {
     shakeX.value = withSequence(
