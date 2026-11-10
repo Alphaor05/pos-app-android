@@ -58,8 +58,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [employee, setEmployee] = useState<EmployeeSession | null>(null);
   const [shopId, setStateShopId] = useState<string | null>(null);
 
-  // Restore session from AsyncStorage on mount
+  // Restore session from AsyncStorage on mount.
+  // Guarded so isLoading always resolves: a rejected or hung read must never
+  // leave the app on a blank screen after the splash is hidden.
   useEffect(() => {
+    let cancelled = false;
+    const finishLoading = () => {
+      if (!cancelled) setIsLoading(false);
+    };
+    const timeout = setTimeout(() => {
+      console.warn('[Auth] Session restore timed out — continuing without it.');
+      finishLoading();
+    }, 10000);
+
     Promise.all([
       AsyncStorage.getItem(SESSION_KEY),
       AsyncStorage.getItem('pos_id')
@@ -81,7 +92,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
       }
       setIsLoading(false);
+    }).catch((err) => {
+      console.warn('[Auth] Session restore failed:', err);
+      finishLoading();
+    }).finally(() => {
+      clearTimeout(timeout);
     });
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timeout);
+    };
   }, []);
 
   // For Web: attempt to logout if the browser tab is closed
